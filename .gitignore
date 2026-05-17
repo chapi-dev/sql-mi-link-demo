@@ -1,0 +1,9 @@
+credentials.json
+*.pwd
+*.secret
+*.key
+*.cer
+*.pfx
+.env
+.env.*
+*.log
