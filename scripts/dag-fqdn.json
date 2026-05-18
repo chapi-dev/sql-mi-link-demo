@@ -1,0 +1,1 @@
+{"properties":{"targetDatabase":"DemoLink","primaryAvailabilityGroupName":"MILinkAG","secondaryAvailabilityGroupName":"MILink_MILinkAG2","sourceEndpoint":"TCP://vm-sql2017.sqllink.internal:5022","replicationMode":"Async"}}
