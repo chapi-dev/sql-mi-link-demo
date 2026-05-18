@@ -1,8 +1,29 @@
 # HANDOFF: estado real del entorno y cómo retomarlo
 
-> Documento creado al cerrar la sesión de demo automatizada.
+> Documento creado al cerrar la sesión de demo automatizada y **actualizado en mayo 2026** tras la
+> sesión de validación del SSMS Wizard.
 > Las **contraseñas y secretos NO están en este repo** — viven en tu
 > sesión local (`session-state/856f30fa-.../files/handoff.json`).
+
+## ⚠️ VEREDICTO TRAS LA SESIÓN DEL WIZARD (mayo 2026)
+
+**MI Link desde SQL Server 2017 CU31-GDR a SQL Managed Instance NO se puede completar** con la
+última versión disponible de SQL 2017. Ver el walkthrough exhaustivo con capturas:
+[`wizard-attempt-sql2017-walkthrough.md`](./wizard-attempt-sql2017-walkthrough.md).
+
+Resumen del bloqueo (los dos caminos oficiales fallan):
+
+| Camino | Error | Por qué |
+|---|---|---|
+| SSMS Wizard | `Msg 2812: Could not find stored procedure 'sp_certificate_add_issuer'` | SP solo existe en SQL 2022 CU13+ |
+| T-SQL manual con `LISTENER_URL ... ;Server=[…]` | `Msg 19499: invalid listener URL` | URL parser de SQL 2017 no acepta el sufijo |
+| T-SQL manual SIN `;Server=` | `error 41976 / LinkInitError`, log "redirect string is empty" | MI necesita el redirect string para enrutar |
+
+**Lo importante**: la red, los NSG, el peering, los certs, el endpoint 5022 y la auth AAD están
+**todos validados como correctos por el propio wizard de SSMS** (Network Checker 11/11 verde,
+Validation 8/8 verde). El bloqueo es de la **versión del engine**, no del entorno.
+
+Para que la demo funcione end-to-end, hay que upgradear a SQL Server 2019 CU15+ o 2022 CU13+.
 
 ## Recursos desplegados (LIVE)
 
@@ -73,34 +94,37 @@ az vm start -g rg-sqlmilink-vm-fra -n vm-sql2017
 
 ## Lo que falta probar (sugerencias)
 
-### Opción 1 (recomendada): SSMS Wizard
+> **Actualización mayo 2026**: las opciones 1 y 2 ya se probaron y ambas fallan estructuralmente en
+> SQL Server 2017 CU31-GDR. Ver [`wizard-attempt-sql2017-walkthrough.md`](./wizard-attempt-sql2017-walkthrough.md).
+
+### Opción 1 (PROBADA - FALLA): SSMS Wizard
 1. Conecta SSMS al SQL Server VM (via Public IP, SQL Auth con `sa` / pwd del handoff, o Windows auth via RDP).
 2. Click derecho `DemoLink` → Tasks → Azure SQL Managed Instance link → New.
-3. Sigue el wizard (necesitarás credenciales Azure válidas).
+3. Sigue el wizard. **Resultado real**: falla en el step "Create Microsoft PKI certificate" con
+   `Msg 2812: Could not find stored procedure 'sp_certificate_add_issuer'`. La SP solo existe en
+   SQL Server 2022 CU13+.
 
-### Opción 2: Reintentar setup manual con cert distinto
-El error 41976 (encrypt msg) puede ser por mismatch de algoritmo. Prueba:
-```sql
--- En SQL Server VM, recrear endpoint con AES explícito y RC4 fallback
-USE master;
-ALTER ENDPOINT [Hadr_endpoint]
-FOR DATABASE_MIRRORING (
-    AUTHENTICATION = CERTIFICATE MILinkCert,
-    ENCRYPTION = REQUIRED ALGORITHM AES,
-    ROLE = ALL
-);
-GO
-```
+### Opción 2 (PROBADA - FALLA): T-SQL manual + REST API
+1. Reusar el cert `MILinkCert` ya existente en master.
+2. Subirlo al MI como ServerTrustCertificate vía REST API
+   (`PUT .../serverTrustCertificates/SQLServerVMCert?api-version=2023-08-01`) — **funciona**.
+3. Crear el Distributed AG en SQL Server vía `CREATE AVAILABILITY GROUP [MILinkDAG] WITH (DISTRIBUTED)…`
+   — funciona **sin** la cláusula `;Server=[<MI_NAME>]`; con ella SQL 2017 devuelve
+   `Msg 19499 invalid listener URL`.
+4. Crear el lado MI vía `PUT .../distributedAvailabilityGroups/MILinkDAG?api-version=2023-08-01` —
+   API acepta pero replica queda en `LinkInitError` / `error 41976` porque sin redirect string el MI
+   no sabe a qué réplica lógica enrutar.
 
-### Opción 3: Capturar tráfico para diagnóstico
-En la VM:
-```powershell
-netsh trace start capture=yes tracefile=C:\MILink\trace.etl IPv4.Address=10.20.0.0/24
-# Lanzar el create DAG desde la API
-# ...
-netsh trace stop
-# Analizar trace.etl con Microsoft Message Analyzer o Wireshark
-```
+### Opción 3 (RECOMENDADA): upgrade SQL Server
+- Provisionar otra VM con SQL Server 2019 CU15+ o SQL Server 2022 CU13+.
+- Reutilizar toda la infra de red existente (VNet peering, MI, NSG, etc.).
+- Reusar el cert `SQLServerVMCert` que ya está subido al MI o regenerar.
+- Esto SÍ permitiría completar el link end-to-end.
+
+### Opción 4: Migración alternativa
+- **Azure DMS** offline si aceptas downtime de horas.
+- **BACPAC export/import** si la BD es pequeña.
+- **Log shipping manual** (BACKUP/RESTORE periódico) si quieres mantener SQL 2017 como origen.
 
 ## Si quieres apagar todo para no pagar
 
@@ -132,4 +156,7 @@ az network private-dns zone delete -g rg-sqlmilink-vm-fra -n sqllink.internal --
 |---|---|---|
 | 41986 | No TCP a endpoint | Abrir 5022 en Windows Firewall de la VM (la NSG no basta) |
 | 41974 | Auth/handshake falla | Importar cert MI + GRANT CONNECT al login |
-| 41976 | Encrypt/decrypt endpoint msg | **Sin resolver** — probable mismatch algoritmo/padding |
+| 41976 | Encrypt/decrypt endpoint msg | **Confirmado en sesión mayo 2026: bloqueador estructural de SQL Server 2017.** Causa real: SQL 2017 no acepta `;Server=[…]` en LISTENER_URL → MI no puede hacer redirect interno → registra "Tried to send redirect request but the redirect string is empty" y el link queda en LinkInitError. **No tiene fix en SQL 2017; requiere SQL 2019 CU15+ o 2022 CU13+.** |
+| 2812  | `Could not find stored procedure 'sp_certificate_add_issuer'` | SP solo existe en SQL 2022 CU13+. El wizard SSMS 21.x intenta usarla siempre. **No tiene fix en SQL 2017**. |
+| 18452 | Login from untrusted domain (Integrated Auth) | Cambiar el dropdown de Auth de "Windows Authentication" a "Microsoft Entra MFA" en el diálogo Connect to Server. La MI MCAPS es AAD-only. |
+| 19499 | Specified listener URL is invalid | SQL Server 2017 rechaza `;Server=[…]` en LISTENER_URL. **No tiene fix en SQL 2017**. |

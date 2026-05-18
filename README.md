@@ -7,6 +7,27 @@ hacia un **Azure SQL Managed Instance** en **Spain Central**.
 Reproduce el escenario real de un cliente que quiere migrar entre regiones
 con downtime mínimo, usando SQL Server 2017 (no SQL 2022).
 
+## 🚨 Veredicto final (mayo 2026)
+
+Tras una sesión completa intentando completar MI Link tanto por SSMS Wizard como por T-SQL manual,
+**confirmamos que SQL Server 2017 CU31-GDR (último parche, KB5046858 Oct 2024) NO puede establecer
+el link** por dos bugs estructurales del engine:
+
+1. **SSMS Wizard** falla con `Msg 2812: Could not find stored procedure 'sp_certificate_add_issuer'`
+   — esa SP solo existe en SQL Server 2022 CU13+.
+2. **T-SQL manual** falla porque SQL 2017 rechaza la sintaxis `;Server=[<MI_NAME>]` en
+   `LISTENER_URL` (`Msg 19499`), que es justo lo que MI necesita para hacer redirect a su réplica
+   lógica. Sin esa cláusula, MI devuelve `error 41976 / LinkInitError`.
+
+Walkthrough completo con capturas de cada paso del wizard y el diagnóstico:
+👉 **[`docs/wizard-attempt-sql2017-walkthrough.md`](docs/wizard-attempt-sql2017-walkthrough.md)**
+
+**Conclusión práctica**: la matriz oficial de Microsoft lista SQL 2017 CU31 como soportado, pero en
+la práctica con la última versión publicada de SQL 2017 no se completa. Para clientes con SQL Server
+2017 que quieran MI Link, **hay que upgradear primero** a SQL Server 2019 CU15+ o 2022 CU13+, o usar
+una migración alternativa (DMS, BACPAC, log shipping).
+
+
 ## 🎯 Objetivo
 Demostrar que MI link funciona cross-region con SQL 2017 y validar el
 cutover unidireccional (única opción de failover en 2017).
@@ -44,23 +65,29 @@ cutover unidireccional (única opción de failover en 2017).
 
 ```
 .
-├── README.md                          # este archivo
+├── README.md                              # este archivo
 ├── scripts/
-│   ├── 01-infra.ps1                   # Provisiona Azure (RGs, VNets, peering, VM, MI)
-│   ├── 00-enable-alwayson.ps1         # En la VM: habilita Always On AG feature
-│   ├── install-sql2017-cu31.ps1       # En la VM: instala CU31 (MI Link requiere CU20+)
-│   ├── 01-prepare-sql.sql             # T-SQL: TF, master key, cert, endpoint 5022
-│   ├── 02-restore-sample-db.sql       # T-SQL: crea DB demo + backup full/log
-│   ├── 03-mi-link-setup.sql           # T-SQL: AG local + Distributed AG con la MI
-│   ├── 04-cutover.sql                 # T-SQL: corta el link (cutover unidireccional)
-│   └── cleanup.ps1                    # Borra los RGs
+│   ├── 01-infra.ps1                       # Provisiona Azure (RGs, VNets, peering, VM, MI)
+│   ├── 00-enable-alwayson.ps1             # En la VM: habilita Always On AG feature
+│   ├── install-sql2017-cu31.ps1           # En la VM: instala CU31 (MI Link requiere CU20+)
+│   ├── 01-prepare-sql.sql                 # T-SQL: TF, master key, cert, endpoint 5022
+│   ├── 02-restore-sample-db.sql           # T-SQL: crea DB demo + backup full/log
+│   ├── 03-mi-link-setup.sql               # T-SQL: AG local + Distributed AG con la MI
+│   ├── 04-cutover.sql                     # T-SQL: corta el link (cutover unidireccional)
+│   └── cleanup.ps1                        # Borra los RGs
 └── docs/
-    ├── runbook.md                     # Guia paso a paso
-    └── gotchas.md                     # Avisos y limitaciones SQL 2017
+    ├── runbook.md                         # Guia paso a paso
+    ├── ssms-wizard-guide.md               # Cómo usar el wizard SSMS (versión teórica)
+    ├── wizard-attempt-sql2017-walkthrough.md  # ⭐ Walkthrough REAL con capturas + diagnóstico
+    ├── handoff.md                         # Estado del entorno live + retomar sesión
+    ├── gotchas.md                         # Avisos y limitaciones SQL 2017 (BLOCKER incluido)
+    ├── reporte-viabilidad.md              # Análisis de viabilidad
+    └── images/wizard-walkthrough/         # 19 capturas del recorrido del wizard
 ```
 
 ## ⚠️ Limitaciones críticas en SQL 2017
-- MI Link requiere **CU20+** (instalamos CU31).
+- **MI Link no se completa con SQL 2017 CU31** (último publicado). Ver veredicto arriba.
+- En teoría requiere **CU20+** (instalamos CU31), pero el URL parser bloquea el link.
 - **Solo replicación unidireccional**: SQL 2017 → MI. No hay managed failback como en SQL 2022.
 - Cutover = romper el link → MI se vuelve primaria standalone → repuntar la app.
 - Rollback solo manual (restaurar backup en SQL Server).
