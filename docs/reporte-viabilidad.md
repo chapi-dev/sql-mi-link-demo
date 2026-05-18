@@ -161,57 +161,15 @@ sqlcmd -S <vm-public-ip>,1433 -U sa -P <pwd> -i setup.sql
 - ⚠️ Cada base de datos requiere su propio link. Si el cliente tiene N BDs, son N flujos de configuración.
 - ⚠️ Logins, jobs SQL Agent, linked servers, certificados de instancia: **NO se replican**. Hay que migrarlos aparte (dbatools va bien).
 
-## 6. Datos reales del SQL Server del cliente
-
-> Confirmado por el cliente tras la demo:
-> `Microsoft SQL Server 2017 (RTM-CU31-GDR) (KB5068402) - 14.0.3515.1 (X64) Oct 3 2025 17:45:52`
-> `Enterprise Edition: Core-based Licensing (64-bit) on Windows Server 2016 Datacenter`
-
-### Implicaciones
-- **CU**: 14.0.3515.1 (CU31-GDR). ✅ Cumple requisito MI Link (CU20+). No requiere parche previo.
-- **Edition**: Enterprise Core-based. ⚠️ Importante para licenciamiento Azure.
-- **OS**: Windows Server 2016. ✅ Soportado.
-
-### Acciones recomendadas para el cliente
-
-#### 6.1 Licencia: Azure Hybrid Benefit (AHB)
-Si tiene Software Assurance activo, puede aplicar AHB y ahorrar ~55% del coste de la MI:
-```powershell
-az sql mi create ... --license-type BasePrice   # AHB (con SA)
-az sql mi create ... --license-type LicenseIncluded   # Sin AHB (paga MI completo)
-```
-
-#### 6.2 Inventario de features Enterprise
-Antes de migrar, validar compatibilidad con el **Azure SQL Migration Extension** de Azure Data Studio. Features Enterprise con limitaciones en MI:
-
-| Feature | Estado en MI |
-|---|---|
-| Always Encrypted, TDE | ✅ |
-| In-Memory OLTP | ✅ (GP limitado, BC sin límite) |
-| Columnstore, Partitioning | ✅ |
-| Replication | ⚠️ Limitado |
-| Service Broker cross-instance | ⚠️ Solo intra-MI |
-| FileStream / FileTable | ❌ No soportado |
-| CLR no-SAFE | ❌ Solo SAFE |
-| Linked Servers a non-SQL (Oracle, MySQL) | ❌ No soportado |
-| MSDTC tradicional | ⚠️ Limitado |
-
-#### 6.3 Dimensionamiento
-Enterprise Core-based suele facturarse en bloques de 4 cores. Mapear:
-- Cores físicos del origen → vCores MI (mínimo igual, mejor con cierto headroom).
-- Si la carga es write-intensive o exige <2 ms IO latency: **Business Critical**, no GP.
-- Si la BD tiene >8 TB: solo **BC** o **Hyperscale** (Hyperscale MI sigue en preview en algunas regiones).
-
-#### 6.4 Pre-migration runbook (extendido)
-1. Backup full + verify del SQL Server origen.
-2. Inventario logins, jobs, linked servers, certificados de instancia.
-3. Run Azure SQL Migration Extension assessment.
-4. Resolver bloqueadores (eliminar FileStream, refactorizar CLR no-SAFE, etc).
-5. Provisionar MI en región destino con `--license-type BasePrice` si AHB aplica.
-6. Configurar MI Link via SSMS Wizard (un link por BD).
-7. Validar `Synchronized` y latencia.
-8. Migrar artefactos no replicados.
-9. Ventana de cutover.
-10. Backup final del origen + monitorización post-cutover de la MI.
-
-
+### Plan recomendado para la migración real
+1. Inventario: BDs, logins, jobs, linked servers, certificados.
+2. Pre-flight: instalar SSMS 19+, verificar conectividad NSG/peering, validar que SQL 2017 está en CU20+ (mejor CU31).
+3. Provisioning de MI en la región destino (4-6h legacy, ahora <30 min en muchos casos).
+4. Configurar MI Link via wizard de SSMS para cada BD.
+5. Validar replicación (drs.synchronization_state_desc = 'SYNCHRONIZED').
+6. Validar lag (segundos típicamente).
+7. Migrar artefactos no replicados (logins, jobs).
+8. Ventana de cutover programada: stop writes, drain log, break link, repuntar app.
+9. Verificar que la app funciona contra MI.
+10. **Backup final del SQL Server origen** (por si rollback).
+11. Desmontaje del entorno origen (con espera prudencial).
