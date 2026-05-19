@@ -1,15 +1,21 @@
-# Walkthrough completo del wizard MI Link en SQL Server 2017 — y por qué bloquea
+# Walkthrough completo del wizard MI Link en SQL Server 2017
 
-> **Veredicto rápido:** SQL Server 2017 CU31-GDR (la última versión disponible a fecha de este informe)
-> tiene una **incompatibilidad estructural** con MI Link cross-region: el parser de `LISTENER_URL`
-> no acepta la sintaxis `;Server=[…]` que el MI necesita para hacer el redirect interno a la réplica
-> lógica. El wizard de SSMS tampoco completa porque usa una SP (`sp_certificate_add_issuer`)
-> que solo existe en SQL Server 2022 CU13+.
+> **🎉 RESUELTO (mayo 2026 — día 2).** Lo que en la primera sesión pareció una incompatibilidad
+> estructural de SQL 2017 era en realidad **un paquete que faltaba en la VM**: el
+> **[SQL Server 2017 Azure Connect Pack (KB5050533, v14.0.3490.10)](https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2017/azureconnect)**,
+> publicado el 6-marzo-2025. Ese paquete añade `sp_certificate_add_issuer`,
+> `sp_get_endpoint_certificate` y extiende el parser de `LISTENER_URL` para aceptar `;Server=[…]`.
 >
-> **Conclusión:** la combinación SQL Server 2017 → Azure SQL Managed Instance vía MI Link **no es
-> viable en la práctica con la última versión disponible de SQL 2017**, a pesar de que la matriz
-> oficial de Microsoft lo lista como soportado. Hay que migrar a SQL Server 2019 CU15+ o 2022 CU13+
-> primero, o usar otro mecanismo de migración (DMS, BACPAC, log shipping…).
+> **Veredicto actualizado:** SQL Server 2017 sí completa MI Link cross-region siempre que tenga
+> instalados **CU31+** (o GDR equivalente) **y** el **Azure Connect Pack KB5050533**. Tras
+> instalarlo, el SSMS Wizard completó las **11/11 tareas en verde** y la BD `DemoLink` replica
+> de la VM (France Central) a la MI (Spain Central) en estado `SYNCHRONIZING / HEALTHY` (modo
+> async, normal en cross-region), con `LogQueue=0` y `RedoQueue=0`.
+
+> Este documento se conserva como walkthrough completo del wizard: la **primera parte** muestra el
+> intento inicial que falló y por qué, y la **sección final ("Resolución…")** documenta el reintento
+> exitoso tras instalar el Azure Connect Pack. La receta de instalación del paquete está en
+> [`azure-connect-pack-install.md`](./azure-connect-pack-install.md).
 
 ---
 
@@ -233,7 +239,12 @@ para SQL 2017.
 
 ---
 
-## Intento de recuperación manual vía T-SQL + REST API
+## Intento de recuperación manual vía T-SQL + REST API (también fallido, mismo motivo)
+
+> **Nota mayo 2026 día 2**: esta sección documenta el segundo callejón sin salida del **primer
+> intento** (antes de instalar el Azure Connect Pack). Falla por la misma causa raíz que el wizard:
+> faltaba KB5050533, así que el parser de `LISTENER_URL` no aceptaba `;Server=[…]`. Se conserva
+> como referencia. Con el Azure Connect Pack instalado, esta misma secuencia funciona.
 
 Tras el fallo del wizard, se intentó terminar el setup vía T-SQL en la VM y REST API contra el MI,
 reutilizando lo que el wizard sí dejó preparado.
@@ -362,45 +373,168 @@ que pueda traer el fix**.
 
 ---
 
-## Conclusión
+## Conclusión del primer intento (con SQL 2017 14.0.3485.1, **sin** Azure Connect Pack)
 
-**SQL Server 2017 → Azure SQL Managed Instance vía MI Link** está documentado como soportado en la
-[matriz de Microsoft](https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/managed-instance-link-preparation),
-pero en la práctica con la última versión disponible (CU31-GDR, KB5046858, Oct 2024) **no se puede
-completar el link cross-region** por dos bugs interdependientes:
+Los errores `Msg 2812 sp_certificate_add_issuer` (wizard) y `Msg 19499 invalid listener URL` /
+`error 41976 LinkInitError` (T-SQL manual) **no son** un bug estructural ni una incompatibilidad
+permanente: son síntomas de **que faltaba el Azure Connect Pack KB5050533** en la VM. La matriz
+oficial de Microsoft está bien — solo que el requisito del Connect Pack vive en
+[una página aparte](https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2017/azureconnect)
+y es fácil pasarlo por alto.
 
-1. **SSMS Wizard** (ruta moderna "Microsoft PKI"): falla por
-   `Could not find stored procedure 'sp_certificate_add_issuer'`. Esta SP solo existe en SQL Server
-   2022 CU13+ y nunca llegará a SQL 2017.
-2. **T-SQL manual** (ruta clásica): SQL Server 2017 rechaza con `Msg 19499 invalid listener URL`
-   la sintaxis `;Server=[…]` que el MI necesita para redirigir las conexiones a la réplica lógica
-   correcta. Sin esa sintaxis, el MI devuelve `error 41976` + log
-   "Tried to send redirect request but the redirect string is empty".
+---
 
-Las **dos rutas oficiales están bloqueadas** por limitaciones del binario de SQL 2017.
-No es un problema de red, de NSG, de certs, de master key, de permisos AAD ni de versión del MI.
-Es del propio engine de SQL 2017.
+## Resolución: instalar el Azure Connect Pack KB5050533 y reintentar
 
-### Recomendaciones
+Tras una jornada infructuosa intentando el T-SQL manual, un compañero apuntó al
+**SQL Server 2017 Azure Connect Pack** (KB5050533, v14.0.3490.10, publicado el 6 de marzo de 2025).
+Receta completa de descarga + instalación en
+[`azure-connect-pack-install.md`](./azure-connect-pack-install.md). Resumen:
 
-| Escenario | Camino recomendado |
+1. Descargar el instalador (542 MB) del Microsoft Update Catalog en la VM (BITS async).
+2. Instalar en silencio:
+   ```powershell
+   Start-Process -FilePath "C:\MILink\KB5050533-AzureConnect.exe" `
+     -ArgumentList '/quiet','/allinstances','/IAcceptSQLServerLicenseTerms' -Wait
+   ```
+3. Esperar reinicio de servicios (`MSSQLSERVER` + `SQLSERVERAGENT`).
+4. Validar:
+   ```sql
+   SELECT @@VERSION;  -- Microsoft SQL Server 2017 ... 14.0.3490.10 (X64)
+   SELECT name FROM sys.system_objects
+    WHERE name IN ('sp_certificate_add_issuer','sp_get_endpoint_certificate');
+   -- Ambas deben aparecer.
+   ```
+
+### Cleanup antes de reintentar el wizard
+
+Hay que limpiar el Distributed AG fallido del primer intento, tanto en la MI como en la VM, para
+que el wizard parta de cero:
+
+```powershell
+# Lado MI: borrar el DAG fallido y el cert subido
+$sub = "57b74ad7-4e8a-4221-b993-59b7df78c096"
+$rg  = "rg-sqlmilink-mi-esp"
+$mi  = "mi-link-demo-fraesp"
+$tok = (az account get-access-token --query accessToken -o tsv)
+
+Invoke-RestMethod -Method DELETE -Headers @{Authorization="Bearer $tok"} `
+  "https://management.azure.com/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Sql/managedInstances/$mi/distributedAvailabilityGroups/MILinkDAG?api-version=2023-08-01"
+
+Invoke-RestMethod -Method DELETE -Headers @{Authorization="Bearer $tok"} `
+  "https://management.azure.com/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Sql/managedInstances/$mi/serverTrustCertificates/SQLServerVMCert?api-version=2023-08-01"
+```
+
+```sql
+-- Lado VM (si quedó algún DAG/AG del intento manual):
+DROP AVAILABILITY GROUP MILinkDAG;
+-- El AG local MILinkAG con DemoLink SYNCHRONIZED se deja intacto.
+```
+
+### Segundo intento del wizard — todo verde
+
+Tras instalar KB5050533 (versión engine = `14.0.3490.10`) y limpiar el DAG fallido:
+
+1. Re-conectar SSMS al SQL Server (`vm-sql2017`, Windows auth) y a la MI
+   (`mi-link-demo-fraesp.332838295123.database.windows.net`, **Microsoft Entra MFA**).
+2. Click derecho `DemoLink` → Tasks → Azure SQL Managed Instance link → New.
+3. Mismos pasos del walkthrough anterior (Link name, Requirements, Select DBs, Add MI, Network
+   Checker 11/11 verde, Validation 8/8 verde).
+4. **Results**: todas las tareas en **Success**:
+
+| Tarea | Estado |
 |---|---|
-| Migrar de SQL 2017 a MI con downtime mínimo | **Upgrade in-place a SQL Server 2019 CU15+ o 2022 CU13+** y luego MI Link |
-| Migración con ventana de downtime de horas | **Azure Database Migration Service (DMS)** offline |
-| Migración de schemas pequeños / dev-test | **BACPAC export/import** |
-| Validar antes de comprar la migración | Levantar un VM con SQL 2019/2022 paralelo y probar MI Link allí |
+| Scripting setup | ✅ Success |
+| Link name availability check on SQL Managed Instance | ✅ Success |
+| **Create Microsoft PKI certificate** | ✅ **Success** (la SP ya existe) |
+| Set up SQL Managed Instance authentication | ✅ Success |
+| Set up SQL Server authentication | ✅ Success |
+| Test connection MI → SQL Server | ✅ Success |
+| Configure SQL Server availability group | ✅ Success |
+| Create distributed availability group (database `DemoLink`) | ✅ Success |
+| Join SQL Managed Instance to hybrid link | ✅ Success |
+| Save link information | ✅ Success |
+| Scripting cleanup | ✅ Success |
 
-### Estado final del entorno
+> El wizard nombró internamente el Distributed AG **`demo-link`** (variante kebab-case del link
+> name elegido), y la réplica del lado MI **`AG_DemoLink_MI`**.
 
-- VM `vm-sql2017` con AG local `MILinkAG` SYNCHRONIZED, ingerir datos OK.
-- Distributed AG `MILinkDAG` creado en SQL Server (sin `;Server=`).
-- Trust cert `SQLServerVMCert` subido al MI.
-- Link en MI (`distributedAvailabilityGroups/MILinkDAG`) creado pero en `LinkInitError 41976`.
-  La MI puede haber autolimpiado el recurso transcurrido un tiempo (verificable con
-  `GET .../distributedAvailabilityGroups/MILinkDAG`).
-- No hay replicación de datos efectiva a MI.
+### Verificación end-to-end
 
-Para limpiar todo:
+**En la VM (origen):**
+```sql
+SELECT name, primary_replica, synchronization_health_desc
+FROM sys.dm_hadr_availability_group_states s
+JOIN sys.availability_groups g ON g.group_id = s.group_id;
+-- MILinkAG: primary_replica=VM-SQL2017, HEALTHY
+
+SELECT ar.replica_server_name, ar.role_desc, hars.synchronization_state_desc,
+       drs.log_send_queue_size, drs.redo_queue_size
+FROM sys.dm_hadr_database_replica_states drs
+JOIN sys.availability_replicas ar  ON drs.replica_id = ar.replica_id
+JOIN sys.dm_hadr_availability_replica_states hars ON drs.replica_id = hars.replica_id
+WHERE ar.replica_server_name LIKE 'AG_DemoLink_MI%';
+-- SYNCHRONIZING / HEALTHY, LogQueue=0, RedoQueue=0
+```
+
+Inserción de la fila marker en la VM:
+```sql
+USE DemoLink;
+INSERT INTO dbo.DemoRows(Origin, Note) VALUES ('VM-WIZARD-OK-LIVE','marker post-resolution');
+-- Devuelve Id=504
+```
+
+**En la MI (destino, AAD MFA):**
+```sql
+USE DemoLink;
+SELECT TOP 5 Id, Origin, Note, InsertedAt FROM dbo.DemoRows ORDER BY Id DESC;
+-- La fila Id=504 aparece, confirmando replicación end-to-end.
+```
+
+### Estado final visual
+
+![Replicación verificada: DemoLink Synchronized en VM y DemoLink visible bajo Databases en la MI](images/wizard-walkthrough/19-success-demolink-replicated-both-sides.png)
+
+`vm-sql2017 (SQL Server 14.0.3490.10 - sa)` muestra `DemoLink (Synchronized)`, y
+`mi-link-demo-fraesp.332838295123.data...` muestra `DemoLink` expandido con todas sus carpetas
+(Database Diagrams, Tables, Views, External Resources, Synonyms, Programmability, Service Broker,
+Storage, Security).
+
+---
+
+## Conclusión final
+
+**MI Link cross-region desde SQL Server 2017 a Azure SQL Managed Instance funciona** siempre
+que se cumplan los **dos** requisitos:
+
+1. **CU31** (`14.0.3456.2`) o un GDR posterior (p. ej. CU31-GDR `14.0.3485.1` de octubre 2024).
+2. **Azure Connect Pack KB5050533** (`14.0.3490.10`) — añade `sp_certificate_add_issuer`,
+   `sp_get_endpoint_certificate` y extiende el parser de `LISTENER_URL` para aceptar `;Server=[…]`.
+
+La matriz oficial de Microsoft es correcta — solo conviene asegurarse de instalar **ambos**
+paquetes, porque el requisito del Connect Pack vive en una página aparte
+([troubleshoot/sql/releases/sqlserver-2017/azureconnect](https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2017/azureconnect))
+y no aparece destacado en la matriz principal de soporte.
+
+### Limitaciones reales (operativas) que siguen aplicando a SQL Server 2017
+
+| Tema | Detalle |
+|---|---|
+| Failover | Solo unidireccional VM → MI. No hay managed failover ni failback (eso es SQL 2022 CU13+). |
+| Cutover | Manual: BD en read-only → esperar `LogQueue=0` y `RedoQueue=0` → `DROP AVAILABILITY GROUP` del DAG en la VM → la MI queda standalone. |
+| Rollback | Manual con backups en SQL Server. Tras cutover, la BD en MI está en formato MI nativo y no se puede importar de vuelta. |
+| Modo de replicación cross-region | `ASYNCHRONOUS_COMMIT` → estado normal `SYNCHRONIZING / HEALTHY` (no `SYNCHRONIZED`). |
+| Granularidad | Un link por base de datos. |
+
+### Estado final del entorno demo
+
+- VM `vm-sql2017` con Azure Connect Pack instalado (engine `14.0.3490.10`).
+- AG local `MILinkAG` SYNCHRONIZED / HEALTHY.
+- Distributed AG `demo-link` cross-region: SYNCHRONIZING / HEALTHY (modo async, normal).
+- Réplica `AG_DemoLink_MI` en MI con `DemoLink` accesible vía Object Explorer y SQL.
+- Marker row Id=504 `VM-WIZARD-OK-LIVE` replicada de VM a MI.
+
+Para limpiar todo cuando ya no se necesite:
 
 ```powershell
 .\scripts\cleanup.ps1

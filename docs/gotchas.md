@@ -1,29 +1,37 @@
 # Gotchas y limitaciones conocidas
 
-## 🚨 BLOCKER CRÍTICO: SQL Server 2017 NO completa MI Link cross-region (confirmado mayo 2026)
+## ✅ Requisito obligatorio en SQL Server 2017: Azure Connect Pack (KB5050533)
 
-A pesar de que la [matriz oficial de Microsoft](https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/managed-instance-link-preparation)
-lista SQL Server 2017 CU31 como soportado para MI Link, en la práctica **no se puede completar el
-link** con la última versión disponible (CU31-GDR, KB5046858, Oct 2024):
+Para que MI Link funcione con SQL Server 2017 hay que instalar **DOS** paquetes en orden:
 
-| Ruta | Resultado | Causa raíz |
+1. **CU31** (`14.0.3456.2`) o un GDR posterior (p. ej. `CU31-GDR KB5046858 14.0.3485.1`).
+2. **Azure Connect Pack — KB5050533 — v14.0.3490.10** (publicado el 6-marzo-2025).
+   👉 [Página oficial](https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2017/azureconnect)
+
+Sin el Azure Connect Pack obtendrás **uno de estos errores** intentando crear el link:
+
+| Ruta | Error sin Azure Connect Pack | Por qué |
 |---|---|---|
-| **SSMS Wizard (Microsoft PKI)** | ❌ `Msg 2812: Could not find stored procedure 'sp_certificate_add_issuer'` | La SP solo existe en SQL Server 2022 CU13+, nunca llegará a SQL 2017. El wizard nuevo no tiene fallback compatible. |
-| **T-SQL manual con `LISTENER_URL ... ;Server=[<MI_NAME>]`** | ❌ `Msg 19499: invalid listener URL` | SQL 2017 CU31-GDR rechaza la sintaxis `;Server=[…]` que el MI necesita para redirect interno. |
-| **T-SQL manual sin `;Server=`** | ❌ Link queda en `LinkInitError`, error 41976, log "Tried to send redirect request but the redirect string is empty" | Sin la cláusula de redirect, MI no sabe a qué réplica lógica enviar la conexión. |
+| **SSMS Wizard (Microsoft PKI)** | `Msg 2812: Could not find stored procedure 'sp_certificate_add_issuer'` | La SP la añade el Connect Pack. |
+| **T-SQL manual con `LISTENER_URL ... ;Server=[<MI_NAME>]`** | `Msg 19499: invalid listener URL` | El parser de SQL 2017 no acepta `;Server=[…]` hasta que el Connect Pack lo extiende. |
+| **T-SQL manual sin `;Server=`** | `error 41976 / LinkInitError`, log "Tried to send redirect request but the redirect string is empty" | Sin `;Server=` el MI no sabe a qué réplica lógica enrutar. |
 
-**SQL Server 2017 está en extended support hasta oct 2027 pero solo recibe parches GDR de seguridad
-— no habrá nuevos CUs que arreglen esto**. Ver el walkthrough completo con capturas en
-[`wizard-attempt-sql2017-walkthrough.md`](./wizard-attempt-sql2017-walkthrough.md).
+Procedimiento detallado de descarga e instalación (BITS + silent install) en
+[`azure-connect-pack-install.md`](./azure-connect-pack-install.md).
 
-**Workarounds**: upgrade SQL Server a 2019 CU15+ o 2022 CU13+, usar Azure DMS, BACPAC, o log shipping.
+**Validación rápida post-install (debe devolver 1 fila):**
+```sql
+SELECT @@VERSION;  -- Debe ser 14.0.3490.10 (o superior)
+SELECT name FROM sys.system_objects
+ WHERE name IN ('sp_certificate_add_issuer','sp_get_endpoint_certificate');
+```
 
-## Otras limitaciones de SQL Server 2017 (cuando sí funcione el link, ej. en 2019/2022)
+## Limitaciones operativas reales de SQL Server 2017 (con MI Link funcionando)
 | Limitación | Impacto | Mitigación |
 |---|---|---|
-| Solo replicación unidireccional (SQL → MI) en 2017 | No hay failback gestionado | Planificar cutover sin retorno; tener backup completo en SQL Server por si toca rollback manual |
+| Solo replicación unidireccional (SQL → MI) | No hay failback gestionado (eso es de SQL 2022 CU13+) | Planificar cutover sin retorno; tener backup completo en SQL Server por si toca rollback manual |
 | No hay "managed failover" en 2017 | El cutover es manual: poner BD read-only, esperar drain, romper DAG | Usar ventana de bajo tráfico + retry logic en la app |
-| Requiere CU20+ (en teoría) | Imagen Marketplace trae CU17 | Instalar CU31 con `install-sql2017-cu31.ps1` — pero ver bloqueador arriba |
+| Cross-region usa `ASYNCHRONOUS_COMMIT` | Estado normal = `SYNCHRONIZING / HEALTHY` (no `SYNCHRONIZED`) | Monitorizar `LogQueue` y `RedoQueue` — si crecen, hay lag |
 | Un link por DB | Si tienes N BDs, configurar N links | Automatizar con T-SQL/PowerShell |
 
 ## Tenants MCAPS / Microsoft internos
@@ -54,8 +62,9 @@ link** con la última versión disponible (CU31-GDR, KB5046858, Oct 2024):
 
 ## SSMS
 - Usa **SSMS 19+** para el wizard de MI Link. Versiones anteriores no lo tienen.
-- ⚠️ SSMS 21.x intenta usar la ruta "Microsoft PKI" que requiere `sp_certificate_add_issuer` →
-  **falla en SQL Server 2017** con `Msg 2812`. Solo funciona contra SQL Server 2022 CU13+.
+- ⚠️ SSMS 21.x usa la ruta "Microsoft PKI" que requiere `sp_certificate_add_issuer` →
+  **en SQL Server 2017 esa SP la trae el Azure Connect Pack (KB5050533)**. Sin el Connect Pack,
+  el wizard falla con `Msg 2812`. Solución: instalar el Connect Pack (ver arriba).
 - Si el wizard falla en el paso "Test connection MI → SQL Server", revisa NSG, firewall de Windows y el endpoint 5022 (`SELECT * FROM sys.tcp_endpoints`).
 - El wizard de SSMS necesita **SQL Server Agent corriendo** (y `Agent XPs = 1`) en la VM para
   ejecutar los trabajos del Network Checker. Si lo ves desactivado:
@@ -75,7 +84,8 @@ link** con la última versión disponible (CU31-GDR, KB5046858, Oct 2024):
 
 ## Certificados
 - El wizard de SSMS gestiona el intercambio de certs automáticamente — pero **solo si SQL Server
-  tiene la SP `sp_certificate_add_issuer`** (SQL 2022 CU13+). Si no, falla con `Msg 2812`.
+  tiene la SP `sp_certificate_add_issuer`** (en SQL 2017 la añade el **Azure Connect Pack
+  KB5050533**; en SQL 2022 viene a partir de CU13). Sin esa SP, falla con `Msg 2812`.
 - Manualmente: `BACKUP CERTIFICATE` en SQL Server, importar en MI con
   `New-AzSqlInstanceServerTrustCertificate` (o REST API
   `PUT .../serverTrustCertificates/{name}?api-version=2023-08-01` con body
@@ -84,14 +94,12 @@ link** con la última versión disponible (CU31-GDR, KB5046858, Oct 2024):
   `GET .../endpointCertificates?api-version=2023-08-01`, importar en SQL Server con
   `CREATE CERTIFICATE … FROM BINARY = 0x…`.
 
-## URL parser del LISTENER_URL en versiones antiguas
-- SQL Server 2017 (incluso CU31-GDR de oct 2024) **NO acepta** la sintaxis
-  `tcp://<host>:5022;Server=[<MI_NAME>]` que el MI requiere para redirección interna —
-  devuelve `Msg 19499 invalid listener URL`.
-- SQL Server 2019 CU15+ y SQL Server 2022 RTM+ sí la aceptan. Para MI Link cross-region,
-  usa al menos SQL 2019 CU15.
-- Sin esa cláusula, el MI registra "Tried to send redirect request but the redirect string is
-  empty" y el link queda en `LinkInitError` con error 41976.
+## URL parser del LISTENER_URL en SQL Server 2017
+- **Sin Azure Connect Pack**: SQL Server 2017 (incluso CU31-GDR) **rechaza**
+  `tcp://<host>:5022;Server=[<MI_NAME>]` con `Msg 19499 invalid listener URL`.
+- **Con Azure Connect Pack (KB5050533)**: el parser acepta la sintaxis y el wizard / T-SQL manual
+  pueden establecer el link correctamente.
+- SQL Server 2019 CU15+ y SQL Server 2022 RTM+ aceptan la sintaxis nativamente sin paquetes extra.
 
 ## API versions de REST API para MI
 - Las API versions disponibles para `Microsoft.Sql/managedInstances` y subrecursos cambian por
