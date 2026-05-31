@@ -93,11 +93,40 @@ INSERT INTO dbo.DemoRows (Origin, Note) VALUES ('VM-after-link', 'Should appear 
 Conéctate a la MI desde SSMS (endpoint público o con jumpbox) y verifica que la fila está.
 
 ## 10. Cutover (opcional, demo final)
+
+⚠️ **Antes del cutover, ejecuta el rollback plan** descrito en
+[`migration-rollback-plan.md`](migration-rollback-plan.md). Esto te da un
+"botón del pánico" multi-capa para SQL 2017 (donde el Link es one-way).
+
+### 10.1 Pre-cutover: Capa 1 (backup nativo)
+```powershell
+.\scripts\06-pre-cutover-backup.ps1 -DbName "DemoLink"
+```
+Crea backup FULL+LOG con `COPY_ONLY` (no rompe la chain del Link).
+
+### 10.2 Pre-cutover: Capa 2 (Azure Backup VM)
+```powershell
+.\scripts\07-enable-azure-backup-vm.ps1
+```
+Crea Recovery Services Vault, protege la VM y lanza snapshot on-demand.
+
+### 10.3 Cutover
 ```sql
 :r scripts\04-cutover.sql
 ```
 - Tras esto, la BD en MI queda como primaria standalone.
-- En SQL 2017 NO hay vuelta atrás gestionada. Para volver, hay que repetir el setup en sentido inverso (no soportado en 2017) o restaurar backup.
+- En SQL 2017 NO hay vuelta atrás gestionada vía Link.
+
+### 10.4 Post-cutover: Capa 3 (freeze primary)
+```sql
+:r scripts\10-post-cutover-freeze-primary.sql
+```
+Deja el primary VM en `READ_ONLY` con auditing — sirve de rollback inmediato.
+
+### 10.5 Rollback (si lo necesitas)
+- **Inmediato** (< 24h, app no escribió en MI todavía): `08-rollback-immediate.sql`
+- **Desde backup** (cualquier momento): `09-rollback-restore-from-blob.sql`
+- Consulta la **decision matrix** en `migration-rollback-plan.md` para elegir.
 
 ## 11. Limpieza
 ```powershell

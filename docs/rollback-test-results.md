@@ -63,6 +63,31 @@ az backup protection backup-now -g rg-sqlmilink-vm-fra -v rsv-sqlmilink-fra \
 - Tipo: **CrashConsistent** por defecto en VM Linux/Windows; para **ApplicationConsistent** SQL es necesario instalar la VM Extension VMSnapshot (presente por defecto en imágenes Marketplace SQL).
 - Tiempo típico: 10-20 min para una VM de 128 GB.
 
+### Resultados empíricos del drill
+
+| Fase | Duración | Resultado |
+|---|---|---|
+| `Take Snapshot` | ~9 min | ✅ Completed |
+| Recovery point creado | T0+9min | ✅ `782143647972714` — **AppConsistent** |
+| `Transfer data to vault` | 15-30 min adicionales | ⏳ Background (no bloquea restore) |
+| Validate Backup | minutos | después de transfer |
+
+**Hallazgo clave**: el recovery point está **disponible para restore en T+9min** desde que se lanza el job, mucho antes de que termine la transferencia al vault. La transferencia es necesaria para retención a largo plazo pero el snapshot local del disco ya es restorable.
+
+**Listado de recovery points**:
+```powershell
+az backup recoverypoint list -g rg-sqlmilink-vm-fra -v rsv-sqlmilink-fra \
+  -c "IaasVMContainer;iaasvmcontainerv2;rg-sqlmilink-vm-fra;vm-sql2017" \
+  -i "VM;iaasvmcontainerv2;rg-sqlmilink-vm-fra;vm-sql2017" \
+  --backup-management-type AzureIaasVM -o table
+
+Name             Time                              Consistency
+---------------  --------------------------------  -------------
+782143647972714  2026-05-31T21:02:49.643997+00:00  AppConsistent
+```
+
+> **AppConsistent = VSS quiesció SQL Server**. El backup contiene un estado transaccional consistente, no requiere recovery al restaurar — es el modo ideal para SQL.
+
 ### Notas operativas relevantes
 - **Soft-delete bloqueado** por policy MCAPS: enhanced-security-state no es desactivable. En limpieza hay que esperar 14 días post-delete.
 - **Cross-region restore**: requiere `--backup-storage-redundancy GeoRedundant` al crear el vault (no es el default).
