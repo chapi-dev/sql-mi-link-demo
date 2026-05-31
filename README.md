@@ -44,6 +44,8 @@ también falla** con `Msg 19499 invalid listener URL` cuando se incluye `;Server
 
 ### Documentación detallada
 
+- **[`docs/migration-rollback-plan.md`](docs/migration-rollback-plan.md)** — ⭐ **Plan completo de migración con "botón del pánico" multi-capa** (4 capas de defense in depth).
+- **[`docs/rollback-test-results.md`](docs/rollback-test-results.md)** — ⭐ Resultados empíricos del drill de rollback (Capa 1 verificada: 504 vs 604 rows, RPO medido).
 - **[`docs/azure-connect-pack-install.md`](docs/azure-connect-pack-install.md)** — la receta exacta
   para descargar e instalar KB5050533 en una VM con SQL 2017 (BITS + silent install).
 - **[`docs/wizard-attempt-sql2017-walkthrough.md`](docs/wizard-attempt-sql2017-walkthrough.md)** —
@@ -107,16 +109,25 @@ cutover unidireccional (única opción de failover en 2017).
 │   ├── 02-restore-sample-db.sql           # T-SQL: crea DB demo + backup full/log
 │   ├── 03-mi-link-setup.sql               # T-SQL: AG local + Distributed AG con la MI
 │   ├── 04-cutover.sql                     # T-SQL: corta el link (cutover unidireccional)
+│   ├── 05-pre-cutover-backup.sql          # ⭐ Capa 1: backup nativo .bak full+log pre-cutover
+│   ├── 06-pre-cutover-backup.ps1          # ⭐ Wrapper PS para invocar 05 con SAS resuelta
+│   ├── 07-enable-azure-backup-vm.ps1      # ⭐ Capa 2: Recovery Services Vault + on-demand snapshot
+│   ├── 08-rollback-immediate.sql          # ⭐ Capa 3: rollback inmediato (BD R/W de vuelta)
+│   ├── 09-rollback-restore-from-blob.sql  # ⭐ Capa 1: restore desde .bak (rollback nuclear)
+│   ├── 10-post-cutover-freeze-primary.sql # ⭐ Capa 3: dejar primary READ_ONLY + auditing
 │   └── cleanup.ps1                        # Borra los RGs
 └── docs/
-    ├── runbook.md                         # Guia paso a paso
+    ├── migration-rollback-plan.md         # ⭐ Plan de migración + botón del pánico (4 capas)
+    ├── rollback-test-results.md           # ⭐ Resultados empíricos del drill
+    ├── runbook.md                         # Guía paso a paso
     ├── ssms-wizard-guide.md               # Cómo usar el wizard SSMS (versión teórica)
     ├── wizard-attempt-sql2017-walkthrough.md  # ⭐ Walkthrough REAL con capturas + resolución
     ├── azure-connect-pack-install.md      # ⭐ Cómo instalar KB5050533 (el fix real)
     ├── handoff.md                         # Estado del entorno live + retomar sesión
     ├── gotchas.md                         # Avisos y limitaciones SQL 2017
     ├── reporte-viabilidad.md              # Análisis de viabilidad
-    └── images/wizard-walkthrough/         # 19 capturas del recorrido del wizard
+    ├── images/wizard-walkthrough/         # 19 capturas del recorrido del wizard
+    └── images/rollback-docs/              # 6 capturas de docs MS Learn (one-way, BACKUP TO URL, etc.)
 ```
 
 ## ⚠️ Limitaciones reales de SQL 2017 (con MI Link funcionando)
