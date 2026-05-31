@@ -45,5 +45,5 @@ SELECT TOP 5 * FROM DemoLink.dbo.DemoRows ORDER BY Id DESC;
 PRINT '=============================================';
 PRINT 'ROLLBACK COMPLETED';
 PRINT 'BD: DemoLink R/W en SQL Server primary';
-PRINT 'NEXT: repoint app connection string a vm-sql2017';
+PRINT 'NEXT: repoint app connection string al SQL Server primary (FQDN/IP del origen)';
 PRINT '=============================================';

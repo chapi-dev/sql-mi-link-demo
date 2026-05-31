@@ -1,13 +1,15 @@
 # =====================================================================
 # cleanup.ps1
-# Elimina toda la infra de la demo (cuesta dinero!).
-# Borra ambos resource groups en paralelo.
+# Elimina la infra de la demo. Borra ambos resource groups en paralelo.
+# Recordar: el Recovery Services Vault (si se desplegó) puede tener
+# soft-delete habilitado por policy y retener items eliminados durante
+# el periodo de retención configurado (típicamente 14 días).
 # =====================================================================
 
 param(
-    [string]$RgVm = "rg-sqlmilink-vm-fra",
-    [string]$RgMi = "rg-sqlmilink-mi-esp",
-    [string]$SubId = "<YOUR-SUB-ID>"
+    [Parameter(Mandatory)] [string]$SubId,
+    [string]$RgVm = "rg-milink-vm",
+    [string]$RgMi = "rg-milink-mi"
 )
 
 az account set --subscription $SubId

@@ -5,8 +5,8 @@
 -- =====================================================================
 
 -- Parámetros (sustituir antes de ejecutar)
---   <storage_account> : ej. stsqlmilinkbackup
---   <container>       : ej. sqlbackups
+--   <storage_account> : storage account de destino
+--   <container>       : container del storage account
 --   <sas_token>       : token SAS sin el '?' inicial (sp=rwdl&...)
 
 USE master;

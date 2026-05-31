@@ -1,32 +1,33 @@
 # =====================================================================
 # 01-infra.ps1
-# Provisiona toda la infraestructura Azure para la demo MI Link:
-#  - 2 RGs (FRA para VM, ESP para MI)
+# Provisiona la infraestructura Azure para una demo de MI Link:
+#  - 2 Resource Groups (uno para la VM, otro para el MI)
 #  - 2 VNets con peering global bidireccional
 #  - Subred MI delegada con NSG y route table
-#  - VM Windows Server 2019 + SQL Server 2017 Developer
+#  - VM Windows Server 2019 + SQL Server 2017 Developer (imagen Marketplace)
 #  - Azure SQL Managed Instance (GP Gen5, AAD-only auth)
 #
-# Antes de ejecutar:
-#  - az login y az account set --subscription "<tu-sub>"
-#  - Tener providers registrados: Microsoft.Sql, Microsoft.Compute, Microsoft.Network
+# Pre-requisitos:
+#  - az login + az account set --subscription "<sub>"
+#  - Providers registrados: Microsoft.Sql, Microsoft.Compute, Microsoft.Network
+#  - Cuota disponible para MI (typically /27 subnet + vCores)
 # =====================================================================
 
 param(
-    [string]$SubId        = "<YOUR-SUBSCRIPTION-ID>",
-    [string]$RgVm         = "rg-sqlmilink-vm-fra",
-    [string]$RgMi         = "rg-sqlmilink-mi-esp",
-    [string]$LocVm        = "francecentral",
-    [string]$LocMi        = "spaincentral",
-    [string]$VnetVm       = "vnet-vm-fra",
-    [string]$VnetMi       = "vnet-mi-esp",
+    [Parameter(Mandatory)] [string]$SubId,
+    [string]$RgVm         = "rg-milink-vm",
+    [string]$RgMi         = "rg-milink-mi",
+    [Parameter(Mandatory)] [string]$LocVm,
+    [Parameter(Mandatory)] [string]$LocMi,
+    [string]$VnetVm       = "vnet-vm",
+    [string]$VnetMi       = "vnet-mi",
     [string]$VmName       = "vm-sql2017",
     [string]$VmSize       = "Standard_L2as_v4",
     [string]$VmAdminUser  = "azureuser",
-    [string]$VmAdminPwd   = $(throw "Pasa -VmAdminPwd"),
-    [string]$MiName       = "mi-link-demo-fraesp",
-    [string]$MiAadAdminUpn= $(throw "Pasa -MiAadAdminUpn"),
-    [string]$MiAadAdminObjId = $(throw "Pasa -MiAadAdminObjId")
+    [Parameter(Mandatory)] [string]$VmAdminPwd,
+    [Parameter(Mandatory)] [string]$MiName,
+    [Parameter(Mandatory)] [string]$MiAadAdminUpn,
+    [Parameter(Mandatory)] [string]$MiAadAdminObjId
 )
 
 az account set --subscription $SubId
@@ -105,7 +106,7 @@ az vm create -g $RgVm -n $VmName -l $LocVm `
     --nsg-rule RDP -o none
 
 # --- Azure SQL Managed Instance (AAD-only auth) ---
-# Nota: el tenant MCAPS exige AAD-only auth via policy.
+# En tenants con políticas restrictivas, AAD-only auth puede ser obligatoria.
 $miSubnetId = az network vnet subnet show -g $RgMi --vnet-name $VnetMi -n ManagedInstance --query id -o tsv
 az sql mi create -g $RgMi -n $MiName -l $LocMi `
     --subnet $miSubnetId `
@@ -117,5 +118,5 @@ az sql mi create -g $RgMi -n $MiName -l $LocMi `
     --external-admin-principal-type User `
     --no-wait
 
-Write-Host "Infra desplegada. MI tarda 4-6h en estar 'Ready'."
-Write-Host "Comprobar estado: az sql mi show -g $RgMi -n $MiName --query state -o tsv"
+Write-Host "Infra desplegada. Provisioning del MI puede tardar; consultar estado:"
+Write-Host "  az sql mi show -g $RgMi -n $MiName --query state -o tsv"

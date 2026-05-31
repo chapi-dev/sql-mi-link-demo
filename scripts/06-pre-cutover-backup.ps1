@@ -7,29 +7,31 @@
   - Ejecuta vía az vm run-command sobre la VM
   - Lista los blobs resultantes para confirmación
 .PARAMETER ResourceGroup
-  RG de la VM (default: rg-sqlmilink-vm-fra)
+  RG de la VM
 .PARAMETER VmName
-  Nombre de la VM (default: vm-sql2017)
+  Nombre de la VM
 .PARAMETER StorageAccount
-  Storage account (default: stsqlmilinkbackup)
+  Storage account de destino
 .PARAMETER Container
-  Container (default: sqlbackups)
+  Container de destino
 .PARAMETER SqlSaPassword
-  Pwd de sa
+  Pwd del login 'sa' (o cualquier login con BACKUP permissions)
+.NOTES
+  En tenants con `allowSharedKeyAccess=false` por policy, el flujo SAS falla.
+  Usar `BACKUP TO DISK` + AzCopy con managed identity como alternativa.
 #>
 [CmdletBinding()]
 param(
-    [string]$ResourceGroup = 'rg-sqlmilink-vm-fra',
-    [string]$VmName        = 'vm-sql2017',
-    [string]$StorageAccount = 'stsqlmilinkbackup',
+    [Parameter(Mandatory)] [string]$ResourceGroup,
+    [Parameter(Mandatory)] [string]$VmName,
+    [Parameter(Mandatory)] [string]$StorageAccount,
     [string]$Container      = 'sqlbackups',
-    [Parameter(Mandatory)]
-    [string]$SqlSaPassword
+    [Parameter(Mandatory)]  [string]$SqlSaPassword
 )
 
 $ErrorActionPreference = 'Stop'
 
-Write-Host "[1/4] Generando user-delegation SAS (válido 7 días)..." -ForegroundColor Cyan
+Write-Host "[1/4] Generando user-delegation SAS..." -ForegroundColor Cyan
 $exp = (Get-Date).AddDays(7).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 $sas = az storage container generate-sas `
     -n $Container `
@@ -50,7 +52,7 @@ $sql = $sqlTemplate `
 $sqlPath = "$env:TEMP\pre-cutover-backup-resolved.sql"
 $sql | Out-File $sqlPath -Encoding ASCII
 
-Write-Host "[3/4] Ejecutando backup en la VM (puede tardar varios minutos)..." -ForegroundColor Cyan
+Write-Host "[3/4] Ejecutando backup en la VM via az vm run-command..." -ForegroundColor Cyan
 $psScript = @"
 `$sqlPath = 'C:\Windows\Temp\pre-cutover-backup.sql'
 @'

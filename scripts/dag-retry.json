@@ -1,1 +1,0 @@
-{"properties":{"primaryAvailabilityGroupName":"MILinkAG","sourceEndpoint":"TCP://10.10.1.4:5022","secondaryAvailabilityGroupName":"MILink_MILinkAG","targetDatabase":"DemoLink","replicationMode":"Async"}}

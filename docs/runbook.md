@@ -1,135 +1,229 @@
-# Runbook: levantar la demo de cero
+# Runbook técnico: levantar el escenario
 
-Tiempo estimado total: ~5-6 horas (la MI tarda 4-6h en aprovisionarse).
+Secuencia de pasos para desplegar un entorno de validación SQL Server →
+Azure SQL Managed Instance con MI Link cross-region.
 
 ## 0. Prerrequisitos
-- Azure CLI 2.60+ y GitHub CLI 2.40+ instalados.
-- `az login` y `az account set --subscription "<id>"` apuntando a una sub donde tengas Owner.
-- Providers registrados: `Microsoft.Sql`, `Microsoft.Network`, `Microsoft.Compute`.
-- Un usuario o grupo AAD para ser administrador de la MI (si tu tenant aplica AAD-only policy).
-- SSMS 19.x (o Azure Data Studio) en tu PC para el wizard de MI Link.
 
-## 1. Provisionar la infraestructura Azure (~15 min, MI sigue al fondo)
+- Azure CLI 2.60+ y, opcionalmente, GitHub CLI 2.40+.
+- `az login` y `az account set --subscription "<sub-id>"` con permisos `Owner`
+  (o `Contributor` + `Network Contributor` + `SQL Managed Instance Contributor`).
+- Providers registrados: `Microsoft.Sql`, `Microsoft.Network`, `Microsoft.Compute`,
+  `Microsoft.RecoveryServices`.
+- Una identidad AAD (usuario o grupo) para el rol *Active Directory admin* del MI
+  si el tenant impone AAD-only auth.
+- SSMS 19+ o Azure Data Studio en una máquina con acceso a ambos endpoints.
+- (Solo SQL Server 2017) tener identificado el origen del paquete
+  **KB5050533 (Azure Connect Pack)** — ver [`azure-connect-pack.md`](azure-connect-pack.md).
+
+## 1. Provisionar la infraestructura
+
 ```powershell
 .\scripts\01-infra.ps1 `
-  -SubId "<sub-id>" `
-  -VmAdminPwd "<pwd-fuerte>" `
-  -MiAadAdminUpn "tu-usuario@tu-tenant.onmicrosoft.com" `
-  -MiAadAdminObjId "<aad-objectid>"
+  -SubId           "<sub-id>" `
+  -VmAdminPwd      "<pwd-fuerte>" `
+  -MiAadAdminUpn   "<upn>@<tenant>.onmicrosoft.com" `
+  -MiAadAdminObjId "<aad-object-id>"
 ```
-Esto deja la VM lista en ~10 min y la MI provisioning durante ~4-6h.
 
-Verifica el estado:
+Provisiona:
+- 2 resource groups (uno por región).
+- 2 VNets + subnets + NSGs (subnet del MI delegada y con RT propia).
+- Global VNet peering bidireccional.
+- VM con SQL Server (imagen Marketplace).
+- MI con AAD-only auth.
+
+Verificar estado del MI:
 ```powershell
-az sql mi show -g rg-sqlmilink-mi-esp -n mi-link-demo-fraesp --query state -o tsv
+az sql mi show -g <rg-mi> -n <mi-name> --query state -o tsv
+# Estados: Creating -> Created -> Ready
 ```
 
 ## 2. Conectar a la VM
-- Public IP: `az vm show -g rg-sqlmilink-vm-fra -n vm-sql2017 -d --query publicIps -o tsv`
-- RDP con `azureuser` / la pwd que pasaste.
-- O usa `az vm run-command invoke` para ejecutar scripts sin RDP.
 
-## 3. Habilitar Always On AG en SQL Server (~2 min)
-Desde la VM (RDP) o usando `az vm run-command`:
 ```powershell
-.\00-enable-alwayson.ps1
-```
-Esto activa la feature y reinicia el servicio `MSSQLSERVER`.
+# IP pública
+az vm show -g <rg-vm> -n <vm-name> -d --query publicIps -o tsv
 
-## 4. Instalar SQL Server 2017 CU31 (~30 min)
+# Opción 1: RDP con azureuser + pwd
+# Opción 2: az vm run-command invoke para ejecutar scripts sin RDP
+az vm run-command invoke -g <rg-vm> -n <vm-name> `
+  --command-id RunPowerShellScript --scripts "Get-Service MSSQLSERVER"
+```
+
+## 3. Habilitar Always On AG
+
 ```powershell
-.\install-sql2017-cu31.ps1
+.\scripts\00-enable-alwayson.ps1
 ```
-Requisito para MI Link (CU20+). La imagen del Marketplace trae CU17 por defecto.
+Activa la feature y reinicia el servicio `MSSQLSERVER`.
 
-## 5. Preparar SQL Server: TF, master key, cert, endpoint (~2 min)
-Edita las variables si lo deseas y ejecuta en SSMS o `sqlcmd`:
+Validar:
 ```sql
-:setvar MasterKeyPwd "TuPwdMaster!2024"
+SELECT SERVERPROPERTY('IsHadrEnabled') AS HadrEnabled;  -- debe devolver 1
+```
+
+## 4. (Solo SQL Server 2017) Aplicar CU31 + Azure Connect Pack
+
+```powershell
+.\scripts\install-sql2017-cu31.ps1
+```
+
+Después, instalar **KB5050533** siguiendo
+[`azure-connect-pack.md`](azure-connect-pack.md).
+
+Validar versión y stored procedures requeridas:
+```sql
+SELECT SERVERPROPERTY('ProductVersion');  -- 14.0.3490.10 o superior
+SELECT name FROM sys.system_objects
+ WHERE name IN ('sp_certificate_add_issuer','sp_get_endpoint_certificate');
+-- Debe devolver ambas filas
+```
+
+## 5. Preparar SQL Server: trace flags, master key, certificado, endpoint
+
+```sql
+:setvar MasterKeyPwd "<pwd-master>"
 :r scripts\01-prepare-sql.sql
 ```
-Verifica que existe el endpoint `Hadr_endpoint` en 5022 y que `C:\MILink\MILinkCert.cer` se exportó.
 
-## 6. Crear la base de datos demo (~1 min)
+Verificar:
+```sql
+SELECT name, port, state_desc FROM sys.tcp_endpoints WHERE name='Hadr_endpoint';
+-- debe estar STARTED en 5022
+
+SELECT name FROM sys.certificates WHERE name='MILinkCert';
+-- debe existir
+```
+
+Confirmar que `C:\MILink\MILinkCert.cer` (o la ruta que uses) se ha exportado.
+
+## 6. Crear la base de datos demo
+
 ```sql
 :r scripts\02-restore-sample-db.sql
 ```
-Quedará `DemoLink` en FULL recovery con un FULL + LOG backup.
 
-## 7. Esperar a que la MI termine (~4-6h)
-Monitorea:
+Resultado:
+- BD `DemoLink` en FULL recovery model.
+- Backup full + log tomados (requisito para que el AG la admita).
+- Tabla `dbo.DemoRows` con filas semilla.
+
+## 7. Esperar a que el MI esté `Ready`
+
 ```powershell
-az sql mi show -g rg-sqlmilink-mi-esp -n mi-link-demo-fraesp --query state -o tsv
-# Estados: Creating -> ... -> Ready
+az sql mi show -g <rg-mi> -n <mi-name> --query state -o tsv
 ```
 
-## 8. Configurar el MI Link
-**Opción A (recomendada) - wizard de SSMS 19+:**
-1. Abre SSMS, conecta al SQL Server (VM).
-2. Click derecho sobre la BD `DemoLink` → **Tasks → Azure SQL Managed Instance link → New…**
-3. Sigue el wizard:
-   - Subir el cert de la MI a SQL Server y viceversa (el wizard lo hace).
-   - Elige `mi-link-demo-fraesp` como destino.
-   - Confirma puertos y conectividad.
-4. Espera ~5-15 min al primer "synchronized".
+Continuar cuando devuelve `Ready`.
 
-**Opción B - T-SQL manual:**
-1. Importa en SQL Server el cert público de la MI (descargado via `Get-AzSqlInstanceServerTrustCertificate` o portal).
-2. Importa en la MI el cert público de SQL Server (`MILinkCert.cer`) con `EXEC sys.sp_set_instance_server_trust_certificate`.
-3. Ejecuta `scripts\03-mi-link-setup.sql` con las variables `LocalServerName`, `MIName`, `MIDnsZone` correctas.
+## 8. Configurar el MI Link
+
+### Opción A (recomendada) — wizard SSMS
+
+1. Abrir SSMS y conectar al SQL Server origen (Windows o SQL auth).
+2. Click derecho sobre la BD → **Tasks → Azure SQL Managed Instance link → New…**.
+3. Seguir el wizard. El detalle de cada página está en
+   [`ssms-wizard-guide.md`](ssms-wizard-guide.md).
+
+### Opción B — T-SQL manual
+
+Procedimiento completo en [`manual-link-setup.md`](manual-link-setup.md).
+Útil para CI/CD, lotes de múltiples DBs o diagnóstico de fallos del wizard.
+
+Resumen:
+
+1. Importar en el SQL Server el certificado público del MI
+   (vía `sys.sp_certificate_add_issuer`).
+2. Importar en el MI el certificado público del SQL Server (`MILinkCert.cer`)
+   vía REST API `PUT .../serverTrustCertificates`.
+3. Editar y ejecutar `scripts\03-mi-link-setup.sql` con las variables
+   `LocalServerName`, `MIName`, `MIDnsZone` correctas.
+4. Unir el MI al DAG vía REST `PUT .../distributedAvailabilityGroups`.
 
 ## 9. Validar replicación
-En SQL Server (VM):
+
+En el SQL Server origen:
 ```sql
-SELECT ar.replica_server_name, drs.synchronization_state_desc, drs.synchronization_health_desc
+SELECT
+    ar.replica_server_name,
+    drs.synchronization_state_desc,
+    drs.synchronization_health_desc,
+    drs.log_send_queue_size,
+    drs.redo_queue_size
 FROM sys.dm_hadr_database_replica_states drs
 JOIN sys.availability_replicas ar ON ar.replica_id = drs.replica_id;
 ```
-Inserta una fila en la VM:
+
+Estado esperado en estado estable cross-region:
+- `synchronization_state_desc` = `SYNCHRONIZING` (commit asíncrono cross-region es lo normal).
+- `synchronization_health_desc` = `HEALTHY`.
+- `log_send_queue_size` y `redo_queue_size` bajos o cero.
+
+Test funcional:
 ```sql
 USE DemoLink;
-INSERT INTO dbo.DemoRows (Origin, Note) VALUES ('VM-after-link', 'Should appear on MI');
+INSERT INTO dbo.DemoRows (Origin, Note) VALUES ('VM-after-link', 'should replicate');
 ```
-Conéctate a la MI desde SSMS (endpoint público o con jumpbox) y verifica que la fila está.
 
-## 10. Cutover (opcional, demo final)
+Conectar al MI con AAD y verificar que la fila está visible.
 
-⚠️ **Antes del cutover, ejecuta el rollback plan** descrito en
-[`migration-rollback-plan.md`](migration-rollback-plan.md). Esto te da un
-"botón del pánico" multi-capa para SQL 2017 (donde el Link es one-way).
+## 10. Cutover
 
-### 10.1 Pre-cutover: Capa 1 (backup nativo)
+⚠️ **Antes del cutover** ejecuta el plan de rollback descrito en
+[`migration-rollback-plan.md`](migration-rollback-plan.md).
+En SQL 2016/2017/2019 el Link es one-way; el botón del pánico se construye fuera del Link.
+
+### 10.1 Capa 1 — backup nativo pre-cutover
+
 ```powershell
 .\scripts\06-pre-cutover-backup.ps1 -DbName "DemoLink"
 ```
-Crea backup FULL+LOG con `COPY_ONLY` (no rompe la chain del Link).
 
-### 10.2 Pre-cutover: Capa 2 (Azure Backup VM)
+Crea full + log con `COPY_ONLY` (no rompe la chain del Link).
+
+### 10.2 Capa 2 — Azure Backup VM
+
 ```powershell
 .\scripts\07-enable-azure-backup-vm.ps1
 ```
-Crea Recovery Services Vault, protege la VM y lanza snapshot on-demand.
+
+Crea Recovery Services Vault, protege la VM y lanza snapshot on-demand
+(application-consistent vía VSS si la VM tiene la extensión VMSnapshot).
 
 ### 10.3 Cutover
+
 ```sql
 :r scripts\04-cutover.sql
 ```
-- Tras esto, la BD en MI queda como primaria standalone.
-- En SQL 2017 NO hay vuelta atrás gestionada vía Link.
 
-### 10.4 Post-cutover: Capa 3 (freeze primary)
+Tras esto la BD en MI queda como primaria standalone. En SQL 2016/2017/2019 el Link
+**se rompe** (esperado). En SQL 2022/2025 con update policy alineada se mantiene
+disponible para failback (ver [`version-comparison.md`](version-comparison.md)).
+
+### 10.4 Capa 3 — congelar el primary
+
 ```sql
 :r scripts\10-post-cutover-freeze-primary.sql
 ```
-Deja el primary VM en `READ_ONLY` con auditing — sirve de rollback inmediato.
 
-### 10.5 Rollback (si lo necesitas)
-- **Inmediato** (< 24h, app no escribió en MI todavía): `08-rollback-immediate.sql`
-- **Desde backup** (cualquier momento): `09-rollback-restore-from-blob.sql`
-- Consulta la **decision matrix** en `migration-rollback-plan.md` para elegir.
+Deja la BD en el primary en `READ_ONLY` + auditing → sirve como rollback inmediato
+mientras se valida el MI.
+
+### 10.5 Rollback (si hace falta)
+
+Elegir según la situación:
+- **Inmediato**, app no escribió todavía en MI: `08-rollback-immediate.sql`.
+- **Desde backup**, en cualquier momento: `09-rollback-restore-from-blob.sql`.
+- **Tardío**, hay datos en MI que conservar: BACPAC (ver
+  [`migration-rollback-plan.md`](migration-rollback-plan.md) Capa 4).
+
+Decision matrix completa en [`migration-rollback-plan.md`](migration-rollback-plan.md).
 
 ## 11. Limpieza
+
 ```powershell
 .\scripts\cleanup.ps1
 ```
-Borra ambos RGs y para el coste.
+
+Borra ambos resource groups del entorno de pruebas.

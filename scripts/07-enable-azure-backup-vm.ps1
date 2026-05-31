@@ -11,10 +11,10 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ResourceGroup = 'rg-sqlmilink-vm-fra',
-    [string]$VmName        = 'vm-sql2017',
-    [string]$VaultName     = 'rsv-sqlmilink-fra',
-    [string]$Location      = 'francecentral',
+    [Parameter(Mandatory)] [string]$ResourceGroup,
+    [Parameter(Mandatory)] [string]$VmName,
+    [Parameter(Mandatory)] [string]$VaultName,
+    [Parameter(Mandatory)] [string]$Location,
     [string]$PolicyName    = 'DefaultPolicy'
 )
 
@@ -39,8 +39,13 @@ if (-not $vaultExists) {
     Write-Host "  Vault ya existe ✅" -ForegroundColor Green
 }
 
-# Soft-delete OFF para que podamos borrar limpio en cleanup
-az backup vault backup-properties set -g $ResourceGroup -n $VaultName --soft-delete-feature-state Disable -o none
+# Intentar deshabilitar soft-delete para limpieza posterior.
+# En tenants con policy "soft-delete obligatorio" este comando falla con
+# BMSUserErrorDisablingSoftDeleteStateNotAllowed — es esperado.
+az backup vault backup-properties set -g $ResourceGroup -n $VaultName --soft-delete-feature-state Disable -o none 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  Soft-delete no se puede deshabilitar (probable policy del tenant). Continuando." -ForegroundColor Yellow
+}
 
 Write-Host "[2/5] Habilitando protección para $VmName..." -ForegroundColor Cyan
 $protected = az backup item list -g $ResourceGroup -v $VaultName --backup-management-type AzureIaasVM `
@@ -48,7 +53,7 @@ $protected = az backup item list -g $ResourceGroup -v $VaultName --backup-manage
 if (-not $protected) {
     az backup protection enable-for-vm `
         -g $ResourceGroup -v $VaultName --vm $VmName --policy-name $PolicyName -o none
-    Write-Host "  Protección habilitada (puede tardar ~30s en propagarse)" -ForegroundColor Yellow
+    Write-Host "  Protección habilitada. Esperando propagación..." -ForegroundColor Yellow
     Start-Sleep -Seconds 60
 } else {
     Write-Host "  Ya estaba protegida ✅" -ForegroundColor Green
@@ -70,7 +75,7 @@ $jobJson = az backup protection backup-now `
 $jobId = ($jobJson | ConvertFrom-Json).name
 Write-Host "  Job ID: $jobId" -ForegroundColor Green
 
-Write-Host "[4/5] Esperando a que el snapshot complete (típico 5-15 min)..." -ForegroundColor Cyan
+Write-Host "[4/5] Esperando a que el snapshot complete..." -ForegroundColor Cyan
 $start = Get-Date
 do {
     Start-Sleep -Seconds 30
