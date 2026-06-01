@@ -124,7 +124,8 @@ Continuar cuando devuelve `Ready`.
 1. Abrir SSMS y conectar al SQL Server origen (Windows o SQL auth).
 2. Click derecho sobre la BD → **Tasks → Azure SQL Managed Instance link → New…**.
 3. Seguir el wizard. El detalle de cada página está en
-   [`ssms-wizard-guide.md`](ssms-wizard-guide.md).
+   [`ssms-wizard-guide.md`](ssms-wizard-guide.md), y hay un walkthrough con capturas reales
+   paso a paso en [`wizard-walkthrough.md`](wizard-walkthrough.md).
 
 ### Opción B — T-SQL manual
 

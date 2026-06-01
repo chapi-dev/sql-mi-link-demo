@@ -65,6 +65,7 @@ Detalles de cada componente en [`docs/architecture.md`](docs/architecture.md).
 │   ├── runbook.md                             # secuencia técnica para levantar el escenario
 │   ├── azure-connect-pack.md                  # paquete crítico para SQL Server 2017 (KB5050533)
 │   ├── ssms-wizard-guide.md                   # ruta recomendada: wizard
+│   ├── wizard-walkthrough.md                  # capturas paso a paso del wizard SSMS
 │   ├── manual-link-setup.md                   # fallback al wizard: setup vía T-SQL + REST
 │   ├── migration-rollback-plan.md             # plan de migración + 4 capas de rollback
 │   ├── rollback-verification.md               # cómo verificar empíricamente cada capa
@@ -97,7 +98,9 @@ Detalles de cada componente en [`docs/architecture.md`](docs/architecture.md).
 2. **Levanta el entorno de validación**: sigue [`docs/runbook.md`](docs/runbook.md).
 3. **Para SQL Server 2017**: instala el [Azure Connect Pack (KB5050533)](docs/azure-connect-pack.md).
    Sin él el wizard falla.
-4. **Configura el link**: usa la [guía del wizard SSMS](docs/ssms-wizard-guide.md).
+4. **Configura el link**: usa la [guía del wizard SSMS](docs/ssms-wizard-guide.md) y, si
+   quieres ver el wizard en acción con capturas reales, mira el
+   [walkthrough con screenshots](docs/wizard-walkthrough.md).
 5. **Diseña el rollback antes del cutover real**: lee
    [`docs/migration-rollback-plan.md`](docs/migration-rollback-plan.md) y verifica con
    [`docs/rollback-verification.md`](docs/rollback-verification.md).

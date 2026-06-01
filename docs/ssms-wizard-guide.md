@@ -6,6 +6,9 @@ Instance Link entre un SQL Server (on-prem o IaaS) y una Azure SQL Managed Insta
 > El wizard es el camino **oficial y recomendado**. Automatiza cert exchange,
 > creación del AG local (si no existe), creación del DAG y la initial seeding.
 >
+> Para ver una pasada completa del wizard con capturas de pantalla, mira
+> [`wizard-walkthrough.md`](wizard-walkthrough.md).
+>
 > Las alternativas (REST API y T-SQL puro) están documentadas pero son frágiles
 > en SQL Server 2017 y no se recomiendan salvo casos muy específicos.
 
