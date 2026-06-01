@@ -67,6 +67,8 @@ Detalles de cada componente en [`docs/architecture.md`](docs/architecture.md).
 │   ├── ssms-wizard-guide.md                   # ruta recomendada: wizard
 │   ├── wizard-walkthrough.md                  # capturas paso a paso del wizard SSMS
 │   ├── manual-link-setup.md                   # fallback al wizard: setup vía T-SQL + REST
+│   ├── poc-snapshot-validation.md             # POC previa: copia puntual con backup+restore
+│   ├── cross-instance-replication.md          # anexo: replicación entre instancias en PaaS
 │   ├── migration-rollback-plan.md             # plan de migración + 4 capas de rollback
 │   ├── rollback-verification.md               # cómo verificar empíricamente cada capa
 │   ├── troubleshooting.md                     # códigos de error frecuentes y resolución
@@ -95,15 +97,20 @@ Detalles de cada componente en [`docs/architecture.md`](docs/architecture.md).
 ## Por dónde empezar
 
 1. **Decide la versión del origen**: lee [`docs/version-comparison.md`](docs/version-comparison.md).
-2. **Levanta el entorno de validación**: sigue [`docs/runbook.md`](docs/runbook.md).
-3. **Para SQL Server 2017**: instala el [Azure Connect Pack (KB5050533)](docs/azure-connect-pack.md).
+2. **(Opcional pero recomendado) Valida primero con una POC**: copia puntual de la BD a la
+   región destino con backup+restore sin tocar producción
+   ([`docs/poc-snapshot-validation.md`](docs/poc-snapshot-validation.md)).
+3. **Levanta el entorno de validación**: sigue [`docs/runbook.md`](docs/runbook.md).
+4. **Para SQL Server 2017**: instala el [Azure Connect Pack (KB5050533)](docs/azure-connect-pack.md).
    Sin él el wizard falla.
-4. **Configura el link**: usa la [guía del wizard SSMS](docs/ssms-wizard-guide.md) y, si
+5. **Configura el link**: usa la [guía del wizard SSMS](docs/ssms-wizard-guide.md) y, si
    quieres ver el wizard en acción con capturas reales, mira el
    [walkthrough con screenshots](docs/wizard-walkthrough.md).
-5. **Diseña el rollback antes del cutover real**: lee
+6. **Diseña el rollback antes del cutover real**: lee
    [`docs/migration-rollback-plan.md`](docs/migration-rollback-plan.md) y verifica con
    [`docs/rollback-verification.md`](docs/rollback-verification.md).
+7. **Si la topología tiene replicación entre instancias**: planifica con
+   [`docs/cross-instance-replication.md`](docs/cross-instance-replication.md).
 
 ---
 

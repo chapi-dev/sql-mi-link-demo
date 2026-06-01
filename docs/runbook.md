@@ -16,6 +16,15 @@ Azure SQL Managed Instance con MI Link cross-region.
 - (Solo SQL Server 2017) tener identificado el origen del paquete
   **KB5050533 (Azure Connect Pack)** — ver [`azure-connect-pack.md`](azure-connect-pack.md).
 
+> **Antes de levantar el entorno de migración real**, conviene validar la BD destino con una
+> **POC de copia puntual** (backup + restore) en un MI pequeño, sin tocar producción. El
+> procedimiento está en [`poc-snapshot-validation.md`](poc-snapshot-validation.md).
+>
+> Si la topología tiene **replicación entre instancias distintas** (transactional / snapshot
+> replication, CDC, Service Broker cross-instance, linked servers), revisar también
+> [`cross-instance-replication.md`](cross-instance-replication.md) para planificar el cutover
+> en el orden adecuado.
+
 ## 1. Provisionar la infraestructura
 
 ```powershell
