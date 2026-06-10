@@ -28,15 +28,15 @@ quedarse en 2017 vs upgrade previo.
 
 ```
                 Región origen                      Región destino
-        ┌─────────────────────────┐     ┌────────────────────────────┐
+        ┌────────────────────────────┐     ┌────────────────────────────┐
         │  SQL Server (VM o on-prem) │     │  Azure SQL Managed Instance│
-        │  Always On AG habilitado │     │  AAD-only auth recomendado │
-        │  CU compatible con MI Link│     │  Update policy alineada    │
-        │  (ver prereqs)           │     │  con la versión origen     │
-        │                         │     │                            │
-        │  Endpoint 5022 ◄────────┼─────┼────►  Endpoint 5022        │
-        │  DAG primary            │     │  DAG secondary             │
-        └─────────────────────────┘     └────────────────────────────┘
+        │  Always On AG habilitado   │     │  AAD-only auth recomendado │
+        │  CU compatible con MI Link │     │  Update policy alineada    │
+        │  (ver prereqs)             │     │  con la versión origen     │
+        │                            │     │                            │
+        │  Endpoint 5022 ◄───────────┼─────┼────►  Endpoint 5022        │
+        │  DAG primary               │     │  DAG secondary             │
+        └────────────────────────────┘     └────────────────────────────┘
                   ▲                                  ▲
                   └──────── Global VNet peering ─────┘
                   (o ExpressRoute/Site-to-Site VPN)
