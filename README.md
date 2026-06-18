@@ -72,6 +72,21 @@ Detalles de cada componente en [`docs/architecture.md`](docs/architecture.md).
 │   ├── migration-rollback-plan.md             # plan de migración + 4 capas de rollback
 │   ├── rollback-verification.md               # cómo verificar empíricamente cada capa
 │   ├── troubleshooting.md                     # códigos de error frecuentes y resolución
+│   ├── modules/
+│   │   └── sql2017-northeu-to-sql2022-spainc/ # MÓDULO: 2017 NorthEU → 2022 SpainC (fase intermedia)
+│   │       ├── README.md                      # overview del módulo
+│   │       ├── official-microsoft-guidance.md # ground truth con citas oficiales MS
+│   │       ├── rpo-options.md                 # ASYNC vs SYNC vs híbrido (cuándo cada uno)
+│   │       ├── architecture.md                # diseño técnico DAG cross-region cross-version
+│   │       ├── decision-rationale.md          # por qué DAG vs DMS/SSMS/ASR/log shipping...
+│   │       ├── networking.md                  # peering, NSG, Blob, DNS
+│   │       ├── out-of-band-objects.md         # logins, jobs, linked servers, TDE certs
+│   │       ├── runbook.md                     # orquestación end-to-end
+│   │       ├── cutover-plan.md                # protocolo cutover RPO 0 (SYNC-before-failover)
+│   │       ├── rollback-plan.md               # 5 capas adaptadas a forward-only compat
+│   │       ├── post-cutover-strategies.md     # A/B/C/D — qué hacer T+24h+
+│   │       ├── post-migration-validation.md   # 6 capas de validación funcional+perf
+│   │       └── troubleshooting.md             # errores típicos cross-version
 │   └── images/
 │       ├── wizard-walkthrough/                # capturas del SSMS Wizard
 │       └── rollback-docs/                     # capturas de docs MS Learn de referencia
@@ -89,14 +104,55 @@ Detalles de cada componente en [`docs/architecture.md`](docs/architecture.md).
     ├── 08-rollback-immediate.sql              # Capa 3: rollback inmediato post-cutover
     ├── 09-rollback-restore-from-blob.sql      # Capa 1: restore desde .bak (rollback nuclear)
     ├── 10-post-cutover-freeze-primary.sql     # Capa 3: dejar primary READ_ONLY + auditing
-    └── cleanup.ps1                            # borra los RGs del entorno de pruebas
+    ├── cleanup.ps1                            # borra los RGs del entorno de pruebas
+    └── modules/
+        └── sql2017-to-sql2022/                # scripts del MÓDULO 2017→2022 cross-region
+            ├── 01-infra-spain.ps1             # RG/VNet/NSG/peering Spain Central
+            ├── 02-install-sql2022.ps1         # VM Marketplace SQL Server 2022 + Always On
+            ├── 03-create-storage.ps1          # Storage Account + SAS para Blob backups
+            ├── 04-validate-network.ps1        # test conectividad TCP 5022 cross-region
+            ├── 05-prepare-sql2022.sql         # master key, cert SpainCCert, endpoint, configs
+            ├── 06-cert-exchange.ps1           # intercambio bidireccional de certs
+            ├── 07-migrate-tde-cert.ps1        # migra SMK + cert TDE (solo si TDE)
+            ├── 08-backup-for-seeding.sql      # backup full+log para MANUAL seeding del DAG
+            ├── 09-restore-for-seeding.sql     # restore NORECOVERY en SpainC
+            ├── 10-migrate-oob-objects.ps1     # logins/jobs/linked servers (via dbatools)
+            ├── 11-create-local-ag-northeu.sql # AG_NorthEU single-replica
+            ├── 12-create-local-ag-spainc.sql  # AG_SpainC single-replica
+            ├── 13-create-distributed-ag.sql   # DAG_Migrate ASYNC + manual seeding
+            ├── 14-join-distributed-ag.sql     # join AG_SpainC al DAG + add BD
+            ├── 15-pre-cutover-backup.sql      # Capa 1 rollback (T-24h)
+            ├── 16-pre-cutover-vm-snapshot.ps1 # Capa 2 rollback (T-24h)
+            ├── 17-pre-cutover-checklist.sql   # health checks T-1h
+            ├── 18-cutover-planned.sql         # protocolo SYNC-before-failover paso a paso
+            ├── 19-enable-jobs-spainc.sql      # habilitar jobs post-cutover
+            ├── 20-disable-jobs-northeu.sql    # deshabilitar jobs origen post-cutover
+            ├── 21-post-cutover-validate.sql   # suite validación Capas A/B/C
+            ├── 28-rollback-cancel-cutover.sql # Capa 0 rollback (pre-failover)
+            ├── 29-rollback-immediate.sql      # Capa 3 rollback (T+min, AG intacto)
+            ├── 30-rollback-from-backup.sql    # Capa 1 rollback (T+h, desde Blob)
+            ├── 31-rollback-from-vm-snapshot.ps1 # Capa 2 rollback (T+h, VM snapshot)
+            ├── 32-rollback-bacpac-export.ps1  # Capa 4 rollback (T+d, downgrade lógico)
+            └── cleanup-spainc.ps1             # tear down de SpainC
 ```
+
+---
+
+## Módulos del repo
+
+| Módulo | Caso de uso | Estado |
+|---|---|---|
+| **Raíz** (`docs/` + `scripts/`) | SQL Server 2017 → Azure SQL Managed Instance directo cross-region. MI Link unidireccional con 4 capas de rollback. | ✅ Validado en producción |
+| **[sql2017-northeu-to-sql2022-spainc](docs/modules/sql2017-northeu-to-sql2022-spainc/README.md)** | SQL Server 2017 (NorthEU) → SQL Server 2022 (SpainC) **como fase intermedia** antes de ir a MI. Cross-version (forward-only). Distributed AG cross-region. RPO 0 en cutover, segundos en disaster. | ✅ Documentación + scripts completos |
+
+> 💡 **Cuándo usar el módulo intermedio**: si el destino final es MI y el origen es SQL Server 2016-2019, **migra primero a SQL Server 2022**. Luego la fase MI tiene MI Link bidireccional nativo (no necesitas las 4 capas externas del rollback del módulo raíz).
 
 ---
 
 ## Por dónde empezar
 
 1. **Decide la versión del origen**: lee [`docs/version-comparison.md`](docs/version-comparison.md).
+   - Si origen es **SQL Server 2016/2017/2019** y destino final es **MI**, considera primero el [módulo intermedio 2017→2022](docs/modules/sql2017-northeu-to-sql2022-spainc/README.md) para tener failback bidireccional en la fase MI.
 2. **(Opcional pero recomendado) Valida primero con una POC**: copia puntual de la BD a la
    región destino con backup+restore sin tocar producción
    ([`docs/poc-snapshot-validation.md`](docs/poc-snapshot-validation.md)).

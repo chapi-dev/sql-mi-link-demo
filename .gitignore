@@ -7,3 +7,14 @@ credentials.json
 .env
 .env.*
 *.log
+
+# Migration secrets (modulo sql2017-to-sql2022)
+.migration-secrets/
+.migration-secrets/**
+.rollback/
+.rollback/**
+*.bacpac
+*.bak
+*.trn
+*.pvk
+smk.bak
