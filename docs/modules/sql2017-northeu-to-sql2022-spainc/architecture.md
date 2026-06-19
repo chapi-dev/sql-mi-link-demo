@@ -436,22 +436,44 @@ Las que ya tiene del setup MI Link de este repo más:
 
 ## 9. Listener y cómo conecta la app post-cutover
 
-### Sin listener (recomendado para este módulo)
+### Lo que **NO** se usa
+Front Door, Traffic Manager, Application Gateway — **ninguno funciona para SQL Server**.
+Son productos de capa 7 HTTP/HTTPS que no entienden el protocolo TDS de SQL Server.
 
-La app cambia su connection string al **FQDN o IP directa** de la VM `vm-sql2022` durante
-el cutover. Simple, sin dependencias.
+### Patrones de "app repoint" recomendados (en orden de simplicidad)
 
-**Pros**: cero infra adicional.
-**Contras**: cualquier failover futuro requiere recambiar el connection string.
+| Patrón | Cómo funciona | Cuándo conviene |
+|---|---|---|
+| **A) Connection string change vía config** | App lee `Server=...` de un config/secret externo; en el cutover cambias el config y la app reconecta. Ej.: K8s configmap, App Service settings, Key Vault secret reference. | El más común en producción. Cambio centralizado, sin tocar código. Requiere que la app tenga retry logic para sobrevivir el segundo de reconexión. |
+| **B) Azure Private DNS Zone CNAME** | Registras un CNAME corporativo (ej. `sql-primary.empresa.internal`) apuntando al FQDN de vm-sql2017. En el cutover cambias el record a vm-sql2022. TTL bajo (10-30s). | Centralizado, multi-app. Si la app no maneja bien config dinámico. El módulo MI Link del repo usa este patrón (ver `sqllink.internal` con records `to-vm-*`). |
+| **C) Feature flag en la app** | La app tiene `if (flag.activeDb=="spainc") use spainc else use france`. Cambias el flag remoto. | App debe tener el flag implementado. Permite migración progresiva (% de tráfico). |
+| **D) DNS record en hosts file** | Ediar hosts file en cada cliente apuntando el FQDN a la nueva IP. | Solo para POCs o casos sin DNS centralizado. **No usar en prod**. |
 
-### Con listener AG
+### Sin listener AG (recomendado para este módulo)
 
-Si quieres listener, el AG local de SpainC puede tener un `LISTENER` definido — pero **en
-clusterless single-replica el listener tiene utilidad limitada** (no hay réplica donde hacer
-failover dentro del AG local).
+Para esta migración, **NO se usa AG Listener**:
+- Un Listener AG tiene utilidad limitada en **clusterless single-replica** (no hay réplica
+  intra-region donde hacer failover dentro del AG local).
+- El failover del DAG es manual y cross-region — el Listener no participa.
 
-**Recomendación**: **sin listener**. Si en el futuro promocionas a una topología HA real,
-añades listener entonces.
+**Recomendación**: la app conecta directamente al FQDN o IP de la VM, y en el cutover se
+cambia ese FQDN/IP mediante uno de los patrones A-C arriba.
+
+### Patrones que NO funcionan (descartados)
+
+| Anti-patrón | Por qué no |
+|---|---|
+| **Azure Front Door** | Capa 7 HTTP only. No habla TDS. |
+| **Traffic Manager con health probes HTTP** | TM no puede verificar si SQL Server está sano. Si pones probes HTTP a un endpoint mock, el cutover real es lento (DNS TTL 30-60s) y propenso a errores. |
+| **Application Gateway** | Capa 7 HTTP. No TDS. |
+| **Internal LB (ILB) backend pool dinámico** | Funciona técnicamente pero el cliente TDS abre conexión de larga duración; cambiar el backend pool mid-flight rompe sesiones. |
+| **CNAME en DNS público** | Funciona pero TTLs públicos suelen ser altos (300s+). En cutover quieres reconexión < 30s. |
+
+### Para la fase MI siguiente (referencia)
+
+Cuando la BD esté en SQL Managed Instance, el endpoint es `<mi>.<dns_zone>.database.windows.net`
+y **no cambia con failover interno** — MI gestiona el routing automáticamente. La app
+puede dejar la cadena fija y solo cambiarla una vez al migrar 2022→MI.
 
 ### Connection string mínima recomendada para la app post-cutover
 

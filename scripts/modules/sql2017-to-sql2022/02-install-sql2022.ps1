@@ -43,7 +43,7 @@ az account set --subscription $SubId
 # --- VM con discos data/log dedicados ---
 Write-Host "Creating VM $VmName in $LocSC..." -ForegroundColor Cyan
 
-$pipArg = if ($NoPublicIp) { "--public-ip-address `"`"" } else { "--public-ip-sku Standard" }
+$pipArg = if ($NoPublicIp) { @("--public-ip-address", "''") } else { @("--public-ip-sku", "Standard") }
 
 az vm create `
     --resource-group $RgSC `
@@ -55,15 +55,20 @@ az vm create `
     --admin-password $VmAdminPwd `
     --vnet-name $VnetSC `
     --subnet $SubnetSC `
-    --nsg "" `
+    --nsg '""' `
     --os-disk-size-gb $OsDiskSizeGb `
     --storage-sku StandardSSD_LRS `
-    $pipArg `
+    @pipArg `
     --license-type None `
     -o none
 
-# El --nsg "" es porque el NSG ya esta en el subnet, no en la NIC.
-# Si el cmd se queja, quitar y reasociar a mano.
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "az vm create failed with exit $LASTEXITCODE"
+    exit 1
+}
+
+# El --nsg '""' indica "no crear NSG nuevo en la NIC" (el NSG ya esta en el subnet).
+# Sintaxis especial PowerShell -> CLI: usar '""' (PowerShell strip de comillas).
 
 Write-Host "  VM creada. Anyadiendo discos data/log..." -ForegroundColor Cyan
 

@@ -56,15 +56,19 @@ distinta versión.
 
 1. **Lee primero la guía oficial MS**: [`official-microsoft-guidance.md`](official-microsoft-guidance.md)
    — ground truth con citas oficiales y URLs. Si algún otro doc del módulo contradice esto, este gana.
-2. **Decide el modo de replicación** (ASYNC / SYNC / híbrido): [`rpo-options.md`](rpo-options.md).
-3. **Entiende el diseño**: [`architecture.md`](architecture.md).
-4. **Por qué este patrón y no log shipping / replicación / backup-restore / DMS / SSMS migration**: [`decision-rationale.md`](decision-rationale.md).
-5. **Red**: [`networking.md`](networking.md) *(pendiente)*.
-6. **Ejecuta**: sigue [`runbook.md`](runbook.md) *(pendiente)*.
-7. **Objetos out-of-band** (logins, jobs, linked servers): [`out-of-band-objects.md`](out-of-band-objects.md) *(pendiente)*.
-8. **Diseña el cutover y rollback antes del go-live**: [`cutover-plan.md`](cutover-plan.md) + [`rollback-plan.md`](rollback-plan.md) *(pendientes)*.
-9. **Estrategias post-cutover** (incluye opción oficial de "upgrade AG1 a 2022 para restaurar failback"): [`post-cutover-strategies.md`](post-cutover-strategies.md) *(pendiente)*.
-10. **Valida**: [`post-migration-validation.md`](post-migration-validation.md) *(pendiente)*.
+2. **⚠️ CRÍTICO antes de empezar**: lee [`poc-validation-findings.md`](poc-validation-findings.md)
+   — findings empíricos de POC real en sub MCAP. Hay un bloqueante crítico si tu sub
+   tiene policy `allowSharedKeyAccess=false` + origen es SQL Server 2017.
+3. **Decide el modo de replicación** (ASYNC / SYNC / híbrido): [`rpo-options.md`](rpo-options.md).
+4. **Entiende el diseño**: [`architecture.md`](architecture.md).
+5. **Por qué este patrón y no log shipping / replicación / backup-restore / DMS / SSMS migration**: [`decision-rationale.md`](decision-rationale.md).
+6. **Red**: [`networking.md`](networking.md).
+7. **Bugs típicos y workarounds**: [`troubleshooting.md`](troubleshooting.md) §0 (12 findings empíricos).
+8. **Ejecuta**: sigue [`runbook.md`](runbook.md).
+9. **Objetos out-of-band** (logins, jobs, linked servers): [`out-of-band-objects.md`](out-of-band-objects.md).
+10. **Diseña el cutover y rollback antes del go-live**: [`cutover-plan.md`](cutover-plan.md) + [`rollback-plan.md`](rollback-plan.md).
+11. **Estrategias post-cutover**: [`post-cutover-strategies.md`](post-cutover-strategies.md).
+12. **Valida**: [`post-migration-validation.md`](post-migration-validation.md).
 
 ## Scripts
 
@@ -73,5 +77,6 @@ Numerados según orden de ejecución (mismo criterio que el resto del repo).
 
 ## Estado del módulo
 
-🚧 En construcción. Documentación primero, scripts después, POC en Azure entre medias para
-validar las decisiones de diseño con números reales.
+🧪 **POC empírica ejecutada** (2026-06-18). Documentación completa, scripts validados con
+12 fixes aplicados. Ver [`poc-validation-findings.md`](poc-validation-findings.md) para
+findings y limitaciones reales en sub MCAP.
