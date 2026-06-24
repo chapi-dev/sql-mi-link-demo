@@ -32,29 +32,34 @@ WHERE database_id = DB_ID('AppDb');
 -- Esperar a write_requests = 0 antes de seguir.
 
 /* =====================================================================
-   T+1 — CAMBIAR DAG A SYNC COMMIT (en vm-sql2017)
-   ===================================================================== */
-ALTER AVAILABILITY GROUP [DAG_Migrate]
-MODIFY AVAILABILITY GROUP ON 'AG_SpainC' WITH (
-    AVAILABILITY_MODE = SYNCHRONOUS_COMMIT
-);
-GO
+   T+1 — ESPERAR A QUE EL ASINCRONO VACIE LA COLA (en vm-sql2017)
+   ---------------------------------------------------------------------
+   NO cambiamos a sincrono: con las escrituras paradas, basta con dejar
+   que el asincrono termine de replicar. El RPO 0 lo da el drenado, no
+   el modo de commit. Ver rpo-options.md.
 
-ALTER AVAILABILITY GROUP [DAG_Migrate]
-MODIFY AVAILABILITY GROUP ON 'AG_NorthEU' WITH (
-    AVAILABILITY_MODE = SYNCHRONOUS_COMMIT
-);
-GO
+   OPCIONAL: si prefieres una senyal de estado SYNCHRONIZED explicita,
+   puedes descomentar el bloque de abajo para pasar a sincrono unos
+   segundos. No es necesario para el RPO 0.
+   ===================================================================== */
+-- (OPCIONAL - solo si quieres senyal SYNCHRONIZED explicita)
+-- ALTER AVAILABILITY GROUP [DAG_Migrate]
+-- MODIFY AVAILABILITY GROUP ON 'AG_SpainC' WITH (AVAILABILITY_MODE = SYNCHRONOUS_COMMIT);
+-- GO
+-- ALTER AVAILABILITY GROUP [DAG_Migrate]
+-- MODIFY AVAILABILITY GROUP ON 'AG_NorthEU' WITH (AVAILABILITY_MODE = SYNCHRONOUS_COMMIT);
+-- GO
 
 /* =====================================================================
-   T+2 — WAIT SYNCHRONIZED (bucle hasta SYNCHRONIZED)
+   T+2 — ESPERAR COLA A 0 + LSN PARIDAD
    ===================================================================== */
--- Ejecutar repetidamente (cada 5s) hasta que ambas replicas devuelvan SYNCHRONIZED
+-- Ejecutar repetidamente (cada 5s) hasta que send_queue y redo_queue lleguen a 0
 SELECT
     ag.name,
     ar.replica_server_name,
-    drs.synchronization_state_desc,
-    drs.synchronization_health_desc,
+    drs.synchronization_state_desc,   -- en ASYNC sera 'SYNCHRONIZING' (esperado)
+    drs.log_send_queue_size  AS send_kb,   -- debe llegar a 0
+    drs.redo_queue_size      AS redo_kb,   -- debe llegar a 0
     drs.last_hardened_lsn,
     drs.last_commit_time
 FROM sys.dm_hadr_database_replica_states drs
@@ -62,8 +67,7 @@ JOIN sys.availability_replicas ar ON ar.replica_id = drs.replica_id
 JOIN sys.availability_groups ag ON ag.group_id = drs.group_id
 WHERE ag.name = 'DAG_Migrate';
 
--- NO continuar hasta que TODAS las filas muestren synchronization_state_desc = 'SYNCHRONIZED'
--- Si tarda > 120 segundos, investigar antes de seguir.
+-- NO continuar hasta que send_queue = 0 Y redo_queue = 0 en el forwarder.
 
 /* =====================================================================
    T+3 — VERIFICACION FINAL DE LSN PARIDAD
@@ -86,13 +90,17 @@ PRINT 'Primary LSN: ' + CAST(@primary_lsn AS varchar(50));
 -- AMBOS LSN DEBEN COINCIDIR. Si no, NO continuar.
 
 /* =====================================================================
-   T+3.5 — PLANNED FAILOVER DEL DAG (DESDE vm-sql2022)
+   T+3.5 — FAILOVER DEL DAG (DESDE vm-sql2022)
+   ---------------------------------------------------------------------
+   En un Distributed AG el unico failover soportado es
+   FORCE_FAILOVER_ALLOW_DATA_LOSS. NO pierde datos porque ya hemos
+   verificado en T+2/T+3 que la cola esta a 0 y los LSN coinciden.
+   Ref: configure-distributed-availability-groups#fail-over-...
    ===================================================================== */
 -- ATENCION: este comando se ejecuta DESDE vm-sql2022 (el target del failover).
 -- Conectarse a vm-sql2022 y ejecutar:
 
--- Esta es la forma planned (sin perdida) con SYNC commit:
-ALTER AVAILABILITY GROUP [DAG_Migrate] FAILOVER;
+ALTER AVAILABILITY GROUP [DAG_Migrate] FORCE_FAILOVER_ALLOW_DATA_LOSS;
 GO
 
 -- Verificar role

@@ -8,14 +8,15 @@ y **impacto en throughput de escritura**. Este documento existe para que la deci
 >
 > | Modo | RPO ante crash | RPO en cutover planificado | Coste de cada write |
 > |---|---|---|---|
-> | **A) ASYNC commit** | Segundos (típico < 5 s) | **0** con protocolo de drain + wait sync | ~0 (commit local) |
+> | **A) ASYNC commit** | Segundos (típico < 5 s) | **0** con protocolo de drain + verificar cola vacía | ~0 (commit local) |
 > | **B) SYNC commit cross-region puro** | **0** | **0** | RTT entre regiones (~25-35 ms) por commit |
 > | **C) Híbrido SYNC local + ASYNC cross-region** | Segundos a nivel cross-region; 0 local | **0** con protocolo idéntico al modo A | ~0 (sin réplica local sync, el modelo se reduce al A; ver matiz abajo) |
 >
-> **Recomendación operativa:** modo **A** por defecto. Mover a **B** sólo si el negocio justifica
-> el coste de latencia **y** la POC muestra latencia inter-region < 5 ms (raro fuera de
-> regiones emparejadas con baja distancia física). El modo **C** sólo aporta si tienes una
-> 3ª réplica local en NorthEU como insurance — añade complejidad significativa.
+> **Recomendación operativa:** modo **A (ASYNC)** por defecto, **también para el cutover**: se
+> drena escrituras, se espera a que la cola de replicación llegue a 0 y se hace el failover →
+> RPO 0 sin necesidad de síncrono. El síncrono solo aporta en DR con RPO 0 permanente (y exige
+> latencia muy baja), que **no es** el caso de esta migración. El modo **C** sólo aporta si
+> tienes una 3ª réplica local en NorthEU como insurance — añade complejidad significativa.
 
 ---
 
@@ -74,7 +75,7 @@ transacciones se pierden.
 | Escenario | RPO |
 |---|---|
 | **Desastre súbito del primario** (VM crash, región caída) | Segundos (típico < 5 s; ver `redo_queue_size` y `log_send_queue_size` en `sys.dm_hadr_database_replica_states`) |
-| **Cutover planificado** con drain + wait LSN sync + planned failover | **0** |
+| **Cutover planificado** con drain + cola a 0 + failover | **0** |
 | **Failover forzado** sin drain | Lo que haya en la `log_send_queue` en ese instante |
 
 > **Por qué cutover planificado da RPO 0 incluso en ASYNC**: porque pausas escrituras
@@ -353,47 +354,77 @@ fase específica.
 
 ---
 
-## RPO 0 en cutover planificado (independiente del modo)
+## RPO 0 en cutover planificado — se consigue **en asíncrono**
 
-**Esto se cumple en los tres modos**, porque el cutover es un protocolo, no una propiedad del modo.
+**No hace falta cambiar a síncrono para tener RPO 0 en el cutover.** Como el cutover es un
+evento controlado con una ventana de parada de escrituras, basta con dejar que el asíncrono
+termine de replicar todo y luego hacer el failover. El RPO 0 lo da el **drenado de
+escrituras + confirmación de que la cola está vacía**, no el modo de commit.
 
-> 📘 **Protocolo oficial MS** ([Distributed AG migration scenarios](https://learn.microsoft.com/sql/database-engine/availability-groups/windows/distributed-availability-groups)):
->
-> "To complete the migration to the new configuration, at the end of the process, **stop all
-> data traffic to the original availability group, and change the distributed availability
-> group to synchronous data movement.** This action ensures that the primary replica of the
-> second availability group is fully synchronized, so there would be no data loss. After
-> you've verified the synchronization, fail over the distributed availability group to the
-> secondary availability group."
+### Por qué el síncrono NO es necesario aquí
 
-### Protocolo recomendado (MS-aligned)
+El síncrono solo tiene sentido para **DR con RPO 0 permanente** (réplica sincronizada 24/7),
+y a cambio exige latencia de red muy baja. **Este no es ese caso**: aquí solo queremos RPO 0
+en el instante del cambio, con las escrituras ya paradas. En ese momento no hay transacciones
+nuevas, así que asíncrono y síncrono dan exactamente lo mismo: cero pérdida.
+
+### Matiz técnico del failover de un Distributed AG
+
+Conviene conocerlo ([Configure DAG — Fail over](https://learn.microsoft.com/sql/database-engine/availability-groups/windows/configure-distributed-availability-groups#fail-over-a-distributed-availability-group)):
+
+> *"For a distributed availability group, the only supported failover type is a manual
+> user-initiated `FORCE_FAILOVER_ALLOW_DATA_LOSS`. Therefore, to prevent data loss, you must
+> take extra steps... to ensure data is synchronized between the two replicas before
+> initiating the failover."*
+
+Es decir: el **único** comando de failover de un DAG es `FORCE_FAILOVER_ALLOW_DATA_LOSS`. No
+existe un "planned failover limpio" como en un AG normal. Por eso lo importante es
+**asegurarte de que está todo replicado ANTES** de lanzarlo — y eso se verifica perfectamente
+en asíncrono mirando que la cola de envío esté a 0 y los LSN coincidan.
+
+### Protocolo recomendado (asíncrono)
 
 1. **Anuncio**: ventana de mantenimiento comunicada (aunque sea de 30 s).
 2. **Drain**: app deja de escribir (feature flag, read-only mode, o stop deliberado).
-3. **Cambiar DAG a SYNC commit** (sólo durante la ventana de cutover):
+3. **Esperar a que el asíncrono vacíe la cola** (todo replicado):
    ```sql
-   ALTER AVAILABILITY GROUP [DAG_Migrate]
-   MODIFY AVAILABILITY GROUP ON 'AG_SpainC' WITH (AVAILABILITY_MODE = SYNCHRONOUS_COMMIT);
+   -- Ejecutar repetidamente hasta que send_queue y redo_queue esten a 0
+   SELECT
+       ar.replica_server_name,
+       drs.synchronization_state_desc,   -- en ASYNC sera 'SYNCHRONIZING' (normal)
+       drs.log_send_queue_size  AS send_kb,   -- debe llegar a 0
+       drs.redo_queue_size      AS redo_kb,   -- debe llegar a 0
+       drs.last_hardened_lsn
+   FROM sys.dm_hadr_database_replica_states drs
+   JOIN sys.availability_replicas ar ON ar.replica_id = drs.replica_id;
    ```
-   Esto **garantiza** que el ACK del secundario ha vuelto para cada commit pendiente.
-4. **Esperar estado SYNCHRONIZED** (no sólo `log_send_queue_size = 0`):
-   ```sql
-   SELECT synchronization_state_desc
-   FROM sys.dm_hadr_database_replica_states
-   WHERE is_local = 0;
-   -- Esperar a que devuelva 'SYNCHRONIZED'
-   ```
-5. **Quiesce final**: opcional, congelar primario con `ALTER DATABASE ... SET RESTRICTED_USER`.
-6. **Verificación final**: `last_hardened_lsn(primary) == last_hardened_lsn(secondary)`.
-7. **Planned failover** del DAG hacia SpainC.
-8. **App repoint**: cambiar connection string al FQDN del 2022.
-9. **Validación smoke**: queries de paridad funcional + perf baseline.
-10. **AG NorthEU se queda intacto** como botón de pánico durante T+24h.
+4. **Verificación de paridad**: `last_hardened_lsn` igual en primario y secundario,
+   `send_queue = 0` y `redo_queue = 0`. Como las escrituras están paradas, una vez igualados
+   ya no divergen.
+5. **Quiesce final** (opcional): congelar primario con `ALTER DATABASE ... SET RESTRICTED_USER`.
+6. **Failover** del DAG hacia SpainC (`FORCE_FAILOVER_ALLOW_DATA_LOSS` — no pierde nada porque
+   está todo replicado y verificado).
+7. **App repoint**: cambiar el alias DNS / connection string al FQDN del 2022.
+8. **Validación smoke**: queries de paridad funcional + perf baseline.
+9. **AG NorthEU se queda intacto** como botón de pánico durante T+24h.
 
-> **Por qué el paso 3 es mejor que "wait LSN sync en ASYNC"**: en ASYNC el `last_hardened_lsn`
-> puede coincidir por instantes y luego divergir si llega una tx tardía. SYNC garantiza
-> **por protocolo** que no hay tx en vuelo sin ACK. Es la diferencia entre "esperar a que
-> parezca igualado" y "garantizar igualdad mediante el propio mecanismo del AG".
+### Opcional: pasar a síncrono solo para tener una señal "SYNCHRONIZED" más limpia
+
+En asíncrono el DAG nunca muestra el estado `SYNCHRONIZED` (se queda en `SYNCHRONIZING`), así
+que la confirmación de "está todo al día" se hace mirando colas y LSN (paso 3-4). Si alguien
+prefiere una señal de estado más explícita, **se puede** cambiar a síncrono unos segundos
+justo antes del failover, esperar a `SYNCHRONIZED` y luego hacer el failover:
+
+```sql
+-- OPCIONAL, solo durante los segundos del cutover, con escrituras ya paradas:
+ALTER AVAILABILITY GROUP [DAG_Migrate]
+MODIFY AVAILABILITY GROUP ON 'AG_SpainC' WITH (AVAILABILITY_MODE = SYNCHRONOUS_COMMIT);
+-- esperar a synchronization_state_desc = 'SYNCHRONIZED', luego failover
+```
+
+Es solo comodidad operativa (una confirmación más explícita), **no una necesidad**. Como las
+escrituras están paradas, la latencia inter-region no penaliza nada en ese instante. Pero el
+camino por defecto es el asíncrono de los pasos 1-9.
 
 Protocolo completo y T-SQL en [`cutover-plan.md`](cutover-plan.md).
 

@@ -14,9 +14,15 @@ verificados (HTTP 200) el 2026-06-22.
 
 | Modo | Cuándo se usa | ¿La latencia importa? |
 |---|---|---|
-| **ASYNCHRONOUS_COMMIT** | Replicación continua (días/semanas) + cutover | ❌ No — diseñado para distancias grandes |
-| **SYNCHRONOUS_COMMIT** | Solo los segundos del cutover, con writes parados | ❌ No — no hay throughput que penalizar |
+| **ASYNCHRONOUS_COMMIT** | Replicación continua (días/semanas) **+ cutover** | ❌ No — diseñado para distancias grandes |
+| SYNCHRONOUS_COMMIT (opcional en cutover) | Solo si quieres señal `SYNCHRONIZED` explícita, con writes ya parados | ❌ No — no hay throughput que penalizar |
 | SYNCHRONOUS_COMMIT 24/7 | HA permanente cross-region (NO es el caso de migración) | ✅ Sí, penaliza cada commit |
+
+> **Nota:** el cutover lo hacemos **en asíncrono** (drenamos escrituras, esperamos a que la
+> cola de replicación llegue a 0 y hacemos el failover). El RPO 0 lo da el drenado, no el
+> síncrono. Pasar a síncrono unos segundos antes del failover es **opcional** (solo para
+> tener una señal de estado más explícita) y, como las escrituras ya están paradas, la
+> latencia no penaliza nada.
 
 ### Cita oficial que lo respalda (literal)
 
@@ -80,9 +86,10 @@ que es exactamente el caso del cliente.
 ## Preguntas para el equipo de SQL Server
 
 1. Vamos a usar Distributed AG en **asíncrono** para la replicación cross-region North
-   Europe → Spain, y solo cambiar a **síncrono los segundos del cutover** para garantizar
-   RPO 0. ¿Confirmáis que es el enfoque correcto y que no hay límite de latencia que nos
-   afecte en este patrón?
+   Europe → Spain, y para el cutover **drenamos escrituras, esperamos a que la cola de
+   replicación llegue a 0 y hacemos el failover** (sin cambiar a síncrono). ¿Confirmáis que
+   con eso tenemos RPO 0 en el cutover, o veis algún motivo para pasar a síncrono los
+   últimos segundos?
 
 2. ¿Confirmáis que Distributed AG cross-region es el método adecuado para 2017→2022 con
    downtime de segundos, o en estos casos empujáis hacia Azure DMS / Log Replay u otra
@@ -97,5 +104,6 @@ que es exactamente el caso del cliente.
    ¿Es aceptable, o recomendáis otra vía (Azure Files con Kerberos/Entra, exención de
    policy, etc.)?
 
-5. RPO 0 con commit síncrono entre regiones: ¿qué latencia consideráis aceptable
-   North Europe ↔ Spain? ¿Tenéis números reales de otros despliegues?
+5. Para un Distributed AG, el único failover soportado es `FORCE_FAILOVER_ALLOW_DATA_LOSS`.
+   ¿Confirmáis que verificando colas a 0 + LSN iguales antes del failover (en asíncrono) no
+   hay pérdida de datos, sin necesidad de síncrono?

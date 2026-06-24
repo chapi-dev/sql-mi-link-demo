@@ -113,22 +113,37 @@ Fuente: misma página de Distributed AG.
 > secondary availability group."
 
 **Implicación para [`rpo-options.md`](rpo-options.md)**:
-- El protocolo de cutover oficial MS es **más elegante** que el "wait LSN sync en ASYNC"
-  que documenté inicialmente.
-- Pasos correctos:
+- La cita de MS menciona "change to synchronous data movement" como **una** forma de
+  asegurar que no hay pérdida de datos antes del failover. Pero **no es la única ni es
+  obligatoria**: lo esencial es garantizar que la réplica está totalmente al día antes del
+  failover, y eso se consigue igual de bien en asíncrono drenando escrituras y verificando
+  que la cola de envío está a 0.
+- **Pasos recomendados (asíncrono, por defecto)**:
   1. **Drain writes** en NorthEU (app deja de escribir).
-  2. **Cambiar el DAG a SYNC commit** mediante `ALTER AVAILABILITY GROUP [DAG_Migrate]
-     MODIFY AVAILABILITY GROUP ON 'AG_SpainC' WITH (AVAILABILITY_MODE = SYNCHRONOUS_COMMIT)`.
-  3. **Esperar a estado SYNCHRONIZED** (no sólo LSN equal; el modo SYNC garantiza que el
-     ACK ha vuelto).
-  4. **Failover** del DAG hacia SpainC.
-  5. **App repoint**.
+  2. **Esperar a que el asíncrono vacíe la cola** (`log_send_queue_size = 0` y
+     `redo_queue_size = 0`) y los `last_hardened_lsn` coincidan en ambos lados.
+  3. **Failover** del DAG hacia SpainC (`FORCE_FAILOVER_ALLOW_DATA_LOSS` — no pierde nada
+     porque ya está todo verificado).
+  4. **App repoint**.
+- **Opcional**: cambiar a síncrono unos segundos antes del failover solo si quieres una
+  señal de estado `SYNCHRONIZED` más explícita que mirar las colas. No es necesario para
+  el RPO 0, y como las escrituras ya están paradas, la latencia no penaliza. Es comodidad
+  operativa, no un requisito.
+
+> 📖 **Matiz del failover del DAG** ([Configure DAG — Fail over](https://learn.microsoft.com/sql/database-engine/availability-groups/windows/configure-distributed-availability-groups#fail-over-a-distributed-availability-group)):
+> *"For a distributed availability group, the only supported failover type is a manual
+> user-initiated `FORCE_FAILOVER_ALLOW_DATA_LOSS`. Therefore, to prevent data loss, you must
+> take extra steps... to ensure data is synchronized between the two replicas before
+> initiating the failover."*
+> Por eso lo importante es verificar la sincronización **antes** del failover — y eso se
+> hace perfectamente en asíncrono mirando colas + LSN.
 
 > "If you're not sure which to use, then set both [availability modes] to asynchronous commit
 > mode **until you're ready to fail over**."
 
-**Confirmación oficial** de la recomendación del modo A en `rpo-options.md`: ASYNC el 99% del
-tiempo, SYNC sólo en la ventana de cutover. Es exactamente el patrón canónico.
+**Confirmación oficial** de la recomendación del modo A en `rpo-options.md`: ASYNC durante
+toda la replicación **y también en el cutover** (drain + cola a 0 + failover). El síncrono
+solo aporta en DR con RPO 0 permanente, que no es el caso de esta migración.
 
 ---
 
@@ -166,7 +181,7 @@ Resumen ejecutivo para nuestro caso (cross-region + cross-version + zero downtim
 | Soporte oficial cross-version 2017→2022 | ✅ Con seeding MANUAL | ✅ | ✅ (con SSMS 21+) |
 | Soporte oficial cross-region | ✅ Cualquier red routable | ✅ Vía SHIR + Blob | ✅ (vía share network) |
 | Downtime cutover | **Segundos** | Minutos (cutover final = tail-log + restore) | Minutos (backup → copy → restore) |
-| RPO en cutover planificado | **0** (con SYNC justo antes) | 0 (con último tail-log) | 0 (con stop app + backup full) |
+| RPO en cutover planificado | **0** (drain + cola a 0 en ASYNC) | 0 (con último tail-log) | 0 (con stop app + backup full) |
 | Necesita servicio Azure adicional | No | DMS + Data Factory + SHIR | No |
 | Logins migrados automáticamente | ❌ Manual via script | ❌ Manual | ✅ Sí, el wizard los incluye |
 | Jobs SQL Agent | ❌ Manual | ❌ Manual | ❌ Manual (script desde SSMS) |
@@ -182,8 +197,10 @@ Resumen ejecutivo para nuestro caso (cross-region + cross-version + zero downtim
 
 1. **Seeding MANUAL obligatorio** (no AUTOMATIC como recomendaba la primera versión de
    `architecture.md`).
-2. **Protocolo de cutover oficial**: cambiar DAG a SYNC justo antes del failover, en vez de
-   "wait LSN equality en ASYNC".
+2. **Protocolo de cutover en ASYNC**: drenar escrituras, esperar a que la cola de
+   replicación llegue a 0 y los LSN coincidan, y entonces hacer el failover. No hace falta
+   cambiar a síncrono (opcional, solo por comodidad de tener una señal `SYNCHRONIZED` más
+   explícita). El síncrono solo aporta en DR con RPO 0 permanente, que no es este caso.
 
 Ambas correcciones se aplicarán a los docs correspondientes y a los scripts que se generen.
 
@@ -244,7 +261,7 @@ Cambios identificados al revisar la documentación oficial:
 | Doc afectado | Corrección | Motivo |
 |---|---|---|
 | `architecture.md` § 6 (Seeding strategy) | Marcar AUTOMATIC como **NO soportado cross-version**. MANUAL es obligatorio. | [Distributed AG — cautions](https://learn.microsoft.com/sql/database-engine/availability-groups/windows/distributed-availability-groups#cautions-when-using-distributed-availability-groups-to-migrate-to-higher-sql-server-versions) |
-| `rpo-options.md` § "Configuración T-SQL clave" | Documentar el patrón oficial de "cambiar a SYNC antes del failover" como recomendación primaria | [DAG migration scenario](https://learn.microsoft.com/sql/database-engine/availability-groups/windows/distributed-availability-groups#migration-scenarios) |
+| `rpo-options.md` § cutover | Cutover en ASYNC (drain + cola a 0 + failover). SYNC opcional, solo señal de estado | [Configure DAG — Fail over](https://learn.microsoft.com/sql/database-engine/availability-groups/windows/configure-distributed-availability-groups#fail-over-a-distributed-availability-group) |
 | `decision-rationale.md` § DMS | Subir el rating de DMS — sí está soportado oficialmente para SQL VM → SQL VM con tutorial dedicado | [DMS online tutorial](https://learn.microsoft.com/data-migration/sql-server/virtual-machines/database-migration-service-online) |
 | `decision-rationale.md` (nueva entrada) | Añadir SSMS Migration Component como opción evaluada | [SSMS Migration Component](https://learn.microsoft.com/ssms/migrate/upgrade-sql-server) |
 | `decision-rationale.md` (nueva entrada) | Añadir Azure Arc migration to Azure VMs (preview) como opción evaluada (y descartada por requisito Arc) | [Arc migration](https://learn.microsoft.com/sql/sql-server/azure-arc/migrate-to-sql-server-on-azure-vms) |

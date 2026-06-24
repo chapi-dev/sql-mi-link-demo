@@ -23,7 +23,7 @@ red de seguridad real.
 | Objetivo | Compromiso |
 |---|---|
 | Sin cortar servicio | App reconecta en segundos durante el cutover. Cero ventana de mantenimiento programada. |
-| RPO = 0 en el cutover planificado | Protocolo de drain + LSN sync + planned failover. Cero transacciones perdidas. |
+| RPO = 0 en el cutover planificado | Protocolo de drain + cola a 0 + failover (en asíncrono). Cero transacciones perdidas. |
 | Botón de pánico | AG local de origen **intacto** durante T+24 h post-cutover + 2 capas de backup independiente. |
 | Cross-region | North Europe (origen actual) → Spain Central (destino). |
 | Cross-version | 2017 → 2022. Forward-compat ✅. Failback al 2017 requiere capas externas (no del log). |

@@ -83,15 +83,14 @@ T-3d   Dry-run del protocolo en entorno de staging (si existe)
 T-24h  Snapshot Azure Backup VM 2017 (Capa 2 de rollback)
        Backup full pre-cutover a Blob (Capa 1)
 T-1h   Comms reminder
-       Health check final del DAG (debe estar SYNCHRONIZED o cerca)
+       Health check final del DAG (HEALTHY, colas de replicación bajas)
        Inicio de fase 1 (drain progresivo si la app lo permite)
 
 T-0    [CUTOVER WINDOW START]
 T+0min Stop writes app
-T+1min Switch DAG a SYNC commit
-T+2min Wait SYNCHRONIZED
-T+3min Verificar LSN paridad final
-T+3min Planned failover del DAG
+T+1min Esperar a que el async vacíe la cola (send_queue = 0, redo_queue = 0)
+T+2min Verificar LSN paridad final
+T+3min Failover del DAG (FORCE_FAILOVER_ALLOW_DATA_LOSS — sin pérdida, ya verificado)
 T+4min App repoint a vm-sql2022
 T+5min [CUTOVER WINDOW END] — smoke tests empiezan
 
@@ -242,50 +241,42 @@ WHERE database_id = DB_ID('AppDb');
 -- Debe ser 0 antes de continuar.
 ```
 
-### T+1 — Cambiar DAG a SYNC commit (segundo 30-60)
+### T+1 — Esperar a que el asíncrono vacíe la cola (segundo 30-120)
+
+Con las escrituras paradas, dejamos que el asíncrono termine de replicar lo que quedaba en
+vuelo. **No cambiamos a síncrono** (no hace falta para RPO 0; ver
+[`rpo-options.md`](rpo-options.md)).
 
 ```sql
--- En vm-sql2017 (global primary del DAG):
-ALTER AVAILABILITY GROUP [DAG_Migrate]
-MODIFY AVAILABILITY GROUP ON 'AG_SpainC' WITH (
-    AVAILABILITY_MODE = SYNCHRONOUS_COMMIT
-);
-GO
-
--- Forzar que tambien el AG_NorthEU local sea SYNC respecto al DAG:
-ALTER AVAILABILITY GROUP [DAG_Migrate]
-MODIFY AVAILABILITY GROUP ON 'AG_NorthEU' WITH (
-    AVAILABILITY_MODE = SYNCHRONOUS_COMMIT
-);
-GO
-```
-
-### T+2 — Wait SYNCHRONIZED (segundo 60-120)
-
-```sql
--- Bucle hasta que ambas replicas reporten SYNCHRONIZED
--- Ejecutar repetidamente (cada 5 s) hasta que ambos devuelvan 'SYNCHRONIZED'
+-- Ejecutar repetidamente (cada 5 s) hasta que send_queue y redo_queue lleguen a 0
 SELECT
     ag.name,
     ar.replica_server_name,
-    rs.synchronization_state_desc,
-    rs.synchronization_health_desc,
+    rs.synchronization_state_desc,    -- en ASYNC sera 'SYNCHRONIZING' (esperado, no es error)
+    rs.log_send_queue_size  AS send_kb,    -- debe llegar a 0
+    rs.redo_queue_size      AS redo_kb,    -- debe llegar a 0
     rs.last_hardened_lsn,
     rs.last_commit_time
 FROM sys.dm_hadr_database_replica_states rs
 JOIN sys.availability_replicas ar ON ar.replica_id = rs.replica_id
 JOIN sys.availability_groups ag ON ag.group_id = rs.group_id
 WHERE ag.name IN ('DAG_Migrate');
--- Esperar a synchronization_state_desc = 'SYNCHRONIZED' en TODAS las replicas.
+-- Continuar solo cuando send_queue = 0 Y redo_queue = 0.
 ```
 
-**Si tarda más de 120 s** → algo va mal. Investigar antes de continuar.
+> 💡 **Opcional**: si prefieres una señal de estado más explícita que mirar las colas, puedes
+> cambiar el DAG a síncrono unos segundos aquí (`MODIFY AVAILABILITY GROUP ON 'AG_SpainC'
+> WITH (AVAILABILITY_MODE = SYNCHRONOUS_COMMIT)`) y esperar a `synchronization_state_desc =
+> SYNCHRONIZED`. Es solo comodidad operativa — con las escrituras paradas la latencia no
+> penaliza nada. Pero **no es necesario**: con la cola a 0 y los LSN iguales (paso T+2) ya
+> tienes RPO 0. El camino por defecto es quedarse en asíncrono.
 
-### T+3 — Verificación final de LSN paridad (segundo 120-150)
+### T+2 — Verificación final de LSN paridad (segundo 120-150)
 
 ```sql
 -- Comparar LSN hardened primary vs forwarder.
--- Deben ser EXACTAMENTE iguales.
+-- Deben ser EXACTAMENTE iguales. Como las escrituras estan paradas, una vez
+-- igualados ya no divergen.
 DECLARE @primary_lsn NUMERIC(25, 0);
 DECLARE @forwarder_lsn NUMERIC(25, 0);
 
@@ -303,20 +294,21 @@ SELECT @primary_lsn AS primary_lsn,
        CASE WHEN @primary_lsn = @forwarder_lsn THEN 'PROCEED' ELSE 'STOP' END AS decision;
 ```
 
-Si **PROCEED**: avanzar al paso siguiente.
+Si **PROCEED** (LSN iguales + colas a 0): avanzar al failover.
 Si **STOP**: investigar. **NO hacer failover**.
 
-### T+3.5 — Planned failover del DAG (segundo 150-180)
+### T+3 — Failover del DAG (segundo 150-180)
+
+> 📖 **Importante**: en un Distributed AG el **único** comando de failover soportado es
+> `FORCE_FAILOVER_ALLOW_DATA_LOSS` (no existe un "planned failover" como en un AG normal).
+> No pierde datos **porque ya hemos verificado** que la cola está a 0 y los LSN coinciden —
+> ese es el motivo de los pasos T+1 y T+2. Ref:
+> [Configure DAG — Fail over](https://learn.microsoft.com/sql/database-engine/availability-groups/windows/configure-distributed-availability-groups#fail-over-a-distributed-availability-group).
 
 ```sql
--- DESDE vm-sql2022 (debe ser el target del failover):
--- Como es ASYNC en condiciones normales y acabamos de pasar a SYNC,
--- el failover es planned (no force) y zero data loss.
-
+-- DESDE vm-sql2022 (el target del failover):
 ALTER AVAILABILITY GROUP [DAG_Migrate] FORCE_FAILOVER_ALLOW_DATA_LOSS;
--- ⚠️ ATENCION: el T-SQL exacto depende de la version SQL Server.
--- En SQL Server 2022:
-ALTER AVAILABILITY GROUP [DAG_Migrate] FAILOVER;
+GO
 
 -- Verificar nuevo estado:
 SELECT
@@ -331,10 +323,9 @@ WHERE ag.name IN ('DAG_Migrate');
 -- vm-sql2022 debe aparecer como PRIMARY.
 ```
 
-> 📖 **Nota sobre el T-SQL del failover**: el comando exacto depende del estado del DAG y
-> la versión SQL Server. Consultar
-> [Failover to a secondary availability group](https://learn.microsoft.com/sql/database-engine/availability-groups/windows/configure-distributed-availability-groups#failover)
-> para la sintaxis exacta del tu CU. **Probarlo en dry-run T-3d**.
+> 📖 **Nota**: confirma la sintaxis exacta de tu CU de SQL Server 2022 (hay diferencias entre
+> 2019 y 2022 por el setting `REQUIRED_SYNCHRONIZED_SECONDARIES_TO_COMMIT`). **Probarlo en
+> dry-run T-3d.**
 
 ### T+4 — Sacar la BD del modo restricted en el destino (segundo 180-210)
 
@@ -540,10 +531,9 @@ Llevar este log durante la ventana (escribirlo en el canal de Slack):
 ```
 T-0:   Empezando cutover. Owner: <nombre>. Equipo: <…>
 T+0:   Stop writes (método: <feature flag / RESTRICTED_USER / stop frontend>)
-T+1:   DAG → SYNC commit
-T+2:   Wait SYNCHRONIZED — estado: <ok / lento>
-T+3:   LSN paridad: <primary_lsn> = <forwarder_lsn> ✅
-T+3.5: Planned failover DAG ejecutado
+T+1:   Esperando vaciado de cola async — send_queue: <X> KB → 0
+T+2:   LSN paridad: <primary_lsn> = <forwarder_lsn> ✅
+T+3:   Failover DAG ejecutado (FORCE_FAILOVER_ALLOW_DATA_LOSS, sin pérdida)
 T+4:   vm-sql2022 ahora PRIMARY. BD MULTI_USER.
 T+4.5: App repoint ejecutado. Connection string nueva activa.
 T+5:   App acepta tráfico. Smoke test: <ok / detalles>
@@ -575,7 +565,7 @@ Plantilla obligatoria post-cutover:
 - ...
 
 ## Métricas reales medidas
-- Tiempo wait SYNCHRONIZED: <X>s
+- Tiempo vaciado de cola async (send_queue → 0): <X>s
 - Tiempo failover: <Y>s
 - Errores HTTP post-cutover: <Z>%
 - Latencia query crítica antes/después: <a>ms / <b>ms
@@ -598,6 +588,6 @@ Este post-mortem alimenta el [`runbook.md`](runbook.md) y este mismo plan para e
 - [Failover to a secondary availability group](https://learn.microsoft.com/sql/database-engine/availability-groups/windows/configure-distributed-availability-groups#failover)
 - [sys.dm_hadr_database_replica_states](https://learn.microsoft.com/sql/relational-databases/system-dynamic-management-views/sys-dm-hadr-database-replica-states-transact-sql)
 - [Query Store usage scenarios](https://learn.microsoft.com/sql/relational-databases/performance/query-store-usage-scenarios)
-- [`rpo-options.md`](rpo-options.md) — opciones SYNC/ASYNC y por qué SYNC en cutover
+- [`rpo-options.md`](rpo-options.md) — opciones SYNC/ASYNC y por qué el cutover va en ASYNC
 - [`rollback-plan.md`](rollback-plan.md) — 4 capas de rollback (pendiente)
 - [`post-cutover-strategies.md`](post-cutover-strategies.md) — qué hacer post-cutover
