@@ -1,15 +1,14 @@
-# Migración de la topología real del cliente (3 AG + 2 standalone) a Spain Central
+# Migración de topología multi-AG (3 AG + 2 standalone) a Spain Central
 
 > **Propósito**: documentar en detalle (a) lo que ya montamos y validamos en la POC, y
-> (b) cómo migrar la topología real del cliente —**8 máquinas** en North Europe: 3
+> (b) cómo migrar una topología enterprise —**8 máquinas** en North Europe: 3
 > Availability Groups (AG-A, AG-B, AG-C) con HA local + 2 standalone (vm-sa-log, vm-sa-rpt)— a nuevas
 > máquinas SQL Server 2022 en Spain Central.
 
 > ⚠️ **Nivel de confianza de este documento**:
 > - **Parte A (lo montado)**: hechos reales de la POC. Alta confianza.
-> - **Parte B (topología origen)**: inventario confirmado por diagrama de arquitectura del
->   cliente (8 VMs, SKUs, discos). Faltan por confirmar: BDs por AG y el mecanismo de copia
->   entre AGs (❓).
+> - **Parte B (topología origen)**: inventario de ejemplo (8 VMs, SKUs, discos). Faltan por
+>   confirmar en cada caso: BDs por AG y el mecanismo de copia entre AGs (❓).
 > - **Partes C-G (estrategia y runbook)**: diseño basado en el patrón DAG ya documentado
 >   en este módulo. Los pasos marcados **[VALIDAR]** deben probarse en un entorno de test
 >   antes de producción.
@@ -48,9 +47,9 @@ Estos mismos fixes aplican a la migración real (son del entorno, no del escenar
 
 ---
 
-## Parte B — La topología real de origen (North Europe / Ireland)
+## Parte B — La topología de origen (ejemplo, North Europe / Ireland)
 
-Inventario confirmado por diagrama de arquitectura del cliente. **8 máquinas** en
+Inventario de ejemplo (topología enterprise típica). **8 máquinas** en
 `vnet-origen-prod` (10.10.0.0/16), subnet `snet-data` (10.10.10.0/24), región **North Europe
 (Ireland)**.
 
@@ -99,7 +98,7 @@ Inventario confirmado por diagrama de arquitectura del cliente. **8 máquinas** 
 - **AG-C** (probablemente "Integración") es el candidato a alojar la lógica de **copia de
   tablas entre AG-B y AG-A** ❓. Confirmar con los queries de abajo — decide el orden de cutover.
 - Las 2 standalone son **SPOF**: buena oportunidad para, al migrar, **darles HA** en Spain
-  (montarlas en un AG) si el cliente quiere eliminar esos puntos únicos de fallo.
+  (montarlas en un AG) si se quiere eliminar esos puntos únicos de fallo.
 
 ### Puntos a confirmar ❓ (con los queries de abajo)
 

@@ -54,10 +54,10 @@ distinta versión.
 
 ## Por dónde empezar
 
-1. **⭐ Migración real del cliente (3 AG + 2 standalone → Spain Central)**:
-   [`migracion-topologia-real-cliente.md`](migracion-topologia-real-cliente.md) — inventario
-   real (8 VMs), estrategia DAG-en-paralelo, runbook paso a paso y marcha atrás. **Empieza aquí
-   si vas a ejecutar la migración del cliente.**
+1. **⭐ Migración de topología multi-AG (3 AG + 2 standalone → Spain Central)**:
+   [`migracion-topologia-multi-ag.md`](migracion-topologia-multi-ag.md) — inventario de
+   ejemplo (8 VMs), estrategia DAG-en-paralelo, runbook paso a paso y marcha atrás. **Empieza
+   aquí si vas a ejecutar una migración con varios Availability Groups.**
 2. **Lee la guía oficial MS**: [`official-microsoft-guidance.md`](official-microsoft-guidance.md)
    — ground truth con citas oficiales y URLs. Si algún otro doc del módulo contradice esto, este gana.
 3. **⚠️ CRÍTICO antes de empezar**: lee [`poc-validation-findings.md`](poc-validation-findings.md)
