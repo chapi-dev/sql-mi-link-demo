@@ -54,20 +54,24 @@ distinta versión.
 
 ## Por dónde empezar
 
-1. **Lee primero la guía oficial MS**: [`official-microsoft-guidance.md`](official-microsoft-guidance.md)
+1. **⭐ Migración real del cliente (3 AG + 2 standalone → Spain Central)**:
+   [`migracion-topologia-real-cliente.md`](migracion-topologia-real-cliente.md) — inventario
+   real (8 VMs), estrategia DAG-en-paralelo, runbook paso a paso y marcha atrás. **Empieza aquí
+   si vas a ejecutar la migración del cliente.**
+2. **Lee la guía oficial MS**: [`official-microsoft-guidance.md`](official-microsoft-guidance.md)
    — ground truth con citas oficiales y URLs. Si algún otro doc del módulo contradice esto, este gana.
-2. **⚠️ CRÍTICO antes de empezar**: lee [`poc-validation-findings.md`](poc-validation-findings.md)
+3. **⚠️ CRÍTICO antes de empezar**: lee [`poc-validation-findings.md`](poc-validation-findings.md)
    — findings empíricos de POC real en sub MCAP. Hay un bloqueante crítico si tu sub
    tiene policy `allowSharedKeyAccess=false` + origen es SQL Server 2017.
-3. **Decide el modo de replicación** (ASYNC / SYNC / híbrido): [`rpo-options.md`](rpo-options.md).
-4. **Entiende el diseño**: [`architecture.md`](architecture.md).
-5. **Por qué este patrón y no log shipping / replicación / backup-restore / DMS / SSMS migration**: [`decision-rationale.md`](decision-rationale.md).
-6. **Red**: [`networking.md`](networking.md).
-7. **Bugs típicos y workarounds**: [`troubleshooting.md`](troubleshooting.md) §0 (12 findings empíricos).
-8. **Ejecuta**: sigue [`runbook.md`](runbook.md).
-9. **Objetos out-of-band** (logins, jobs, linked servers): [`out-of-band-objects.md`](out-of-band-objects.md).
-10. **Diseña el cutover y rollback antes del go-live**: [`cutover-plan.md`](cutover-plan.md) + [`rollback-plan.md`](rollback-plan.md).
-11. **Estrategias post-cutover**: [`post-cutover-strategies.md`](post-cutover-strategies.md).
+4. **Decide el modo de replicación** (ASYNC / SYNC / híbrido): [`rpo-options.md`](rpo-options.md).
+5. **Entiende el diseño**: [`architecture.md`](architecture.md).
+6. **Por qué este patrón y no log shipping / replicación / backup-restore / DMS / SSMS migration**: [`decision-rationale.md`](decision-rationale.md).
+7. **Red**: [`networking.md`](networking.md).
+8. **Bugs típicos y workarounds**: [`troubleshooting.md`](troubleshooting.md) §0 (12 findings empíricos).
+9. **Ejecuta**: sigue [`runbook.md`](runbook.md).
+10. **Objetos out-of-band** (logins, jobs, linked servers): [`out-of-band-objects.md`](out-of-band-objects.md).
+11. **Diseña el cutover y rollback antes del go-live**: [`cutover-plan.md`](cutover-plan.md) + [`rollback-plan.md`](rollback-plan.md).
+12. **Estrategias post-cutover**: [`post-cutover-strategies.md`](post-cutover-strategies.md).
 12. **Valida**: [`post-migration-validation.md`](post-migration-validation.md).
 
 ## Scripts
